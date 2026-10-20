@@ -4,15 +4,31 @@ import { join } from "node:path";
 import { discoverBooks } from "./ingestion/books.js";
 import { CHUNKER_VERSION, parseMarkdown } from "./ingestion/markdown.js";
 import { createEmbeddingProvider } from "./providers/index.js";
+import { appConfigSchema } from "./schemas/config.js";
+import { indexOptionsSchema } from "./schemas/library.js";
 import { searchInputSchema } from "./schemas/search.js";
 import type { SearchMode, SearchOptions } from "./schemas/search.js";
 import { SqliteContentRepository } from "./storage/content.js";
 import type { IndexedSource } from "./storage/content.js";
 import { SqliteVectorRepository } from "./storage/vectors.js";
 import type { VectorRepository } from "./storage/vectors.js";
-import type { AppConfig, EmbeddingProvider, SearchResult, StoredChunk } from "./types.js";
+import type {
+  AppConfig,
+  EmbeddingProvider,
+  IndexOptions,
+  SearchResult,
+  StoredChunk,
+} from "./types.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+
+function parseLibraryConfig(config: AppConfig): AppConfig {
+  const validation = appConfigSchema.safeParse(config);
+  if (!validation.success) {
+    throw new Error("Invalid library configuration structure. Check required fields and types.");
+  }
+  return validation.data;
+}
 
 export interface IndexReport {
   books: number;
@@ -33,18 +49,20 @@ export interface SearchResponse {
 
 /** Orchestrates independent stores. Source changes and vector jobs commit together in content.sqlite. */
 export class BookLibrary {
+  readonly config: AppConfig;
   readonly content: SqliteContentRepository;
   private vectors?: VectorRepository;
   private readonly provider?: EmbeddingProvider;
 
   constructor(
-    readonly config: AppConfig,
+    config: AppConfig,
     dependencies: { provider?: EmbeddingProvider; vectors?: VectorRepository } = {},
   ) {
+    this.config = parseLibraryConfig(config);
     this.provider =
       dependencies.provider ??
-      (config.embedding ? createEmbeddingProvider(config.embedding) : undefined);
-    this.content = new SqliteContentRepository(join(config.dataDir, "content.sqlite"));
+      (this.config.embedding ? createEmbeddingProvider(this.config.embedding) : undefined);
+    this.content = new SqliteContentRepository(join(this.config.dataDir, "content.sqlite"));
     this.vectors = dependencies.vectors;
   }
 
@@ -53,7 +71,12 @@ export class BookLibrary {
     return this.vectors;
   }
 
-  async index(options: { embed?: boolean } = {}): Promise<IndexReport> {
+  async index(options: IndexOptions = {}): Promise<IndexReport> {
+    const validation = indexOptionsSchema.safeParse(options);
+    if (!validation.success) {
+      throw new Error("Invalid indexing options structure: expected an optional boolean embed.");
+    }
+    const { embed } = validation.data;
     const release = this.content.acquireWriterLock();
     let run: number | undefined;
     try {
@@ -98,7 +121,7 @@ export class BookLibrary {
         failed: 0,
         warnings: discovery.warnings,
       };
-      const embedding = await this.synchronizeVectors(options.embed !== false);
+      const embedding = await this.synchronizeVectors(embed !== false);
       Object.assign(report, {
         embedded: embedding.embedded,
         reused: embedding.reused,
@@ -423,6 +446,7 @@ export class BookLibrary {
 }
 
 export async function initializeLibrary(config: AppConfig): Promise<void> {
+  config = parseLibraryConfig(config);
   await mkdir(config.booksDir, { recursive: true });
   await mkdir(config.dataDir, { recursive: true });
   const library = new BookLibrary(config);

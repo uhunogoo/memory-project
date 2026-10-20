@@ -1,12 +1,12 @@
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { BookLibrary } from "../src/library.js";
+import { BookLibrary, initializeLibrary } from "../src/library.js";
 import { SqliteVectorRepository } from "../src/storage/vectors.js";
-import type { AppConfig, EmbeddingProvider } from "../src/types.js";
+import type { AppConfig, EmbeddingProvider, IndexOptions } from "../src/types.js";
 
 let directory: string;
 let config: AppConfig;
@@ -69,6 +69,113 @@ afterEach(async () => {
 });
 
 describe("book library integration", () => {
+  it.each([
+    { booksDir: null },
+    { dataDir: 123 },
+    { chunking: undefined },
+    { chunking: null },
+    { chunking: [] },
+    { chunking: { targetTokens: "800", overlapTokens: 100 } },
+    { chunking: { targetTokens: 800, overlapTokens: 1.5 } },
+    { embedding: null },
+    { embedding: { provider: "ollama", model: ["private-config-input"] } },
+  ])(
+    "rejects malformed configuration before constructor or initializer IO %#",
+    async (overrides) => {
+      const input = {
+        ...config,
+        booksDir: join(directory, "uncreated", "books"),
+        dataDir: join(directory, "uncreated", "data"),
+        ...overrides,
+      } as AppConfig;
+      const before = await readdir(directory);
+      const create = () => {
+        // Injecting a provider must not bypass the configuration contract.
+        const library = new BookLibrary(input, { provider: fakeProvider() });
+        openLibraries.add(library);
+      };
+      expect(create).toThrow("Invalid library configuration structure");
+      expect(create).not.toThrow("private-config-input");
+      expect(await readdir(directory)).toEqual(before);
+
+      const initialize = initializeLibrary(input);
+      await expect(initialize).rejects.toThrow("Invalid library configuration structure");
+      await expect(initialize).rejects.not.toThrow("private-config-input");
+      await expect(initialize).rejects.not.toHaveProperty("issues");
+      expect(await readdir(directory)).toEqual(before);
+    },
+  );
+
+  it.each([null, [], {}, "private-config-input"])(
+    "rejects invalid top-level configuration without creating storage %#",
+    async (input) => {
+      const create = () => {
+        const library = new BookLibrary(input as AppConfig);
+        openLibraries.add(library);
+      };
+      expect(create).toThrow("Invalid library configuration structure");
+      await expect(initializeLibrary(input as AppConfig)).rejects.toThrow(
+        "Invalid library configuration structure",
+      );
+      expect(await readdir(directory)).toEqual(["books"]);
+    },
+  );
+
+  it("initializes a valid configuration and keeps the parsed configuration independent of its caller", async () => {
+    const input = {
+      ...config,
+      booksDir: join(directory, "new-books"),
+      chunking: { ...config.chunking },
+      extraMetadata: "ignored",
+    };
+    await initializeLibrary(input);
+    expect(await readdir(input.booksDir)).toEqual([]);
+    expect(await readdir(input.dataDir)).toEqual(
+      expect.arrayContaining(["content.sqlite", "vectors.sqlite"]),
+    );
+    const library = new BookLibrary(input);
+    openLibraries.add(library);
+    expect(library.config).not.toHaveProperty("extraMetadata");
+    input.dataDir = join(directory, "different-data");
+    input.chunking.targetTokens = 1;
+    expect(library.config.dataDir).toBe(config.dataDir);
+    expect(library.config.chunking.targetTokens).toBe(800);
+  });
+
+  it.each([null, [], "private-index-input", { embed: "false" }, { embed: 0 }, { embed: null }])(
+    "rejects malformed indexing options before locking, writing or embedding %#",
+    async (options) => {
+      await bookFile("Book", "chapter.md", "# Chapter\nContent to index.");
+      const provider = fakeProvider();
+      const library = openLibrary({ provider });
+      const before = library.content.status();
+      const acquireLock = vi.spyOn(library.content, "acquireWriterLock");
+      const startRun = vi.spyOn(library.content, "startRun");
+      const applySnapshot = vi.spyOn(library.content, "applySnapshot");
+      const result = library.index(options as IndexOptions);
+      await expect(result).rejects.toThrow("Invalid indexing options structure");
+      await expect(result).rejects.not.toThrow("private-index-input");
+      await expect(result).rejects.not.toHaveProperty("issues");
+      expect(acquireLock).not.toHaveBeenCalled();
+      expect(startRun).not.toHaveBeenCalled();
+      expect(applySnapshot).not.toHaveBeenCalled();
+      expect(library.content.status()).toEqual(before);
+      expect(provider.embed).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps omitted, true and false embedding options and allows additional metadata", async () => {
+    const provider = fakeProvider();
+    const library = openLibrary({ provider });
+    await bookFile("Book", "chapter.md", "# Chapter\nFirst content.");
+    const options = { embed: false, metadata: "ignored" };
+    expect(await library.index(options)).toMatchObject({ updated: 1, embedded: 0 });
+    expect(provider.embed).not.toHaveBeenCalled();
+    expect(await library.index({ embed: true })).toMatchObject({ embedded: 1, failed: 0 });
+    await bookFile("Book", "chapter.md", "# Chapter\nChanged content.");
+    expect(await library.index()).toMatchObject({ updated: 1, embedded: 1, failed: 0 });
+  });
+
   it.each([
     [undefined, {}, "Search query must be a string."],
     [42, {}, "Search query must be a string."],

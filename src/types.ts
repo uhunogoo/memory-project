@@ -1,7 +1,8 @@
-import type { ChunkOptions, EmbeddingConfig } from "./schemas/config.js";
+import type { EmbeddingConfig } from "./schemas/config.js";
 import type { EmbeddingInputKind } from "./providers/schemas.js";
 
-export type { ChunkOptions, EmbeddingConfig } from "./schemas/config.js";
+export type { AppConfig, ChunkOptions, EmbeddingConfig } from "./schemas/config.js";
+export type { IndexOptions } from "./schemas/library.js";
 export type { EmbeddingInputKind } from "./providers/schemas.js";
 
 export interface SourceFile {
@@ -64,13 +65,6 @@ export interface EmbeddingProvider {
   readonly profileId: string;
   readonly config: EmbeddingConfig;
   embed(texts: string[], kind: EmbeddingInputKind): Promise<number[][]>;
-}
-
-export interface AppConfig {
-  booksDir: string;
-  dataDir: string;
-  chunking: ChunkOptions;
-  embedding?: EmbeddingConfig;
 }
 
 export interface StoredChunk extends ParsedChunk {

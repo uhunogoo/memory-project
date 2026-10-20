@@ -20,6 +20,13 @@ export const embeddingConfigSchema = z.object({
   queryPrefix: z.string(),
 });
 
+export const appConfigSchema = z.object({
+  booksDir: z.string(),
+  dataDir: z.string(),
+  chunking: chunkOptionsSchema,
+  embedding: embeddingConfigSchema.optional(),
+});
+
 const embeddingFileConfigSchema = z.strictObject({
   ...embeddingConfigSchema.omit({ apiKey: true }).partial({
     baseUrl: true,
@@ -33,12 +40,12 @@ const embeddingFileConfigSchema = z.strictObject({
 });
 
 export const configFileSchema = z.strictObject({
-  booksDir: z.string().optional(),
-  dataDir: z.string().optional(),
+  ...appConfigSchema.pick({ booksDir: true, dataDir: true }).partial().shape,
   chunking: z.strictObject(chunkOptionsSchema.partial().shape).optional(),
   embedding: embeddingFileConfigSchema.optional(),
 });
 
+export type AppConfig = z.infer<typeof appConfigSchema>;
 export type ChunkOptions = z.infer<typeof chunkOptionsSchema>;
 export type EmbeddingConfig = z.infer<typeof embeddingConfigSchema>;
 export type EmbeddingFileConfig = z.infer<typeof embeddingFileConfigSchema>;
