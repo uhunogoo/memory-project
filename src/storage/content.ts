@@ -29,11 +29,6 @@ export interface VectorJob {
 export interface ContentRepository {
   getChunk(id: string): StoredChunk | null;
   listChunks(bookId?: string): StoredChunk[];
-  searchLexical(
-    query: string,
-    limit: number,
-    bookId?: string,
-  ): { chunk: StoredChunk; score: number }[];
   close(): void;
 }
 
@@ -50,10 +45,17 @@ export class SqliteContentRepository implements ContentRepository {
       this.transaction(() => {
         // Inspect under the same write lock as migration: another process may initialize first.
         const version = Number(this.db.prepare("PRAGMA user_version").get()!.user_version);
-        if (version > 1) {
-          throw new Error(`Content database schema ${version} is newer than supported version 1.`);
+        if (version > 2) {
+          throw new Error(`Content database schema ${version} is newer than supported version 2.`);
         }
-        if (version === 1) return;
+        if (version === 2) return;
+        if (version === 1) {
+          // Search indexes now live entirely in the derived search database.
+          this.db.exec(
+            "DROP TRIGGER IF EXISTS chunks_delete_fts; DROP TABLE IF EXISTS chunks_fts; PRAGMA user_version=2;",
+          );
+          return;
+        }
         this.db.exec(`
         CREATE TABLE books (
           id TEXT PRIMARY KEY, directory TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
@@ -81,10 +83,6 @@ export class SqliteContentRepository implements ContentRepository {
         );
         CREATE INDEX chunks_document ON chunks(document_id, ordinal);
         CREATE INDEX sections_document ON sections(document_id, start_offset);
-        CREATE VIRTUAL TABLE chunks_fts USING fts5(chunk_id UNINDEXED, title, headings, body, tokenize='unicode61');
-        CREATE TRIGGER chunks_delete_fts AFTER DELETE ON chunks BEGIN
-          DELETE FROM chunks_fts WHERE chunk_id=old.id;
-        END;
         CREATE TABLE vector_jobs (
           id INTEGER PRIMARY KEY, operation TEXT NOT NULL CHECK(operation IN ('upsert','delete')),
           chunk_id TEXT NOT NULL, profile_id TEXT NOT NULL, input_hash TEXT NOT NULL,
@@ -96,7 +94,7 @@ export class SqliteContentRepository implements ContentRepository {
           status TEXT NOT NULL, details TEXT
         );
         CREATE TABLE writer_lock (id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL);
-        PRAGMA user_version=1;
+        PRAGMA user_version=2;
       `);
       });
     } catch (error) {
@@ -236,12 +234,8 @@ export class SqliteContentRepository implements ContentRepository {
             section.startLine,
             section.endLine,
           );
-        const book = books.find((item) => item.id === source.bookId)!;
         const saveChunk = this.db.prepare(
           "INSERT INTO chunks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        );
-        const saveFts = this.db.prepare(
-          "INSERT INTO chunks_fts(chunk_id,title,headings,body) VALUES (?,?,?,?)",
         );
         for (const chunk of source.parsed.chunks) {
           saveChunk.run(
@@ -261,11 +255,12 @@ export class SqliteContentRepository implements ContentRepository {
             chunk.endLine,
             chunk.estimatedTokens,
           );
-          saveFts.run(chunk.id, book.title, chunk.headingPath.join(" / "), chunk.text);
           // A retained chunk will be reconciled by its input hash; do not delete its reusable vector.
           this.db
             .prepare("DELETE FROM vector_jobs WHERE operation='delete' AND chunk_id=?")
             .run(chunk.id);
+          // '*' upserts deliver the searchable text/payload, even without a model.
+          this.enqueueEmbedding(chunk, "*");
           if (profileId) this.enqueueEmbedding(chunk, profileId);
         }
         result.updated++;
@@ -379,23 +374,6 @@ export class SqliteContentRepository implements ContentRepository {
 
   getDocument(id: string) {
     return this.db.prepare("SELECT * FROM documents WHERE id=?").get(id) ?? null;
-  }
-
-  searchLexical(
-    query: string,
-    limit: number,
-    bookId?: string,
-  ): { chunk: StoredChunk; score: number }[] {
-    // Treat user text as terms, never as raw FTS syntax. unicode61 is language neutral, without English stemming.
-    const terms = [...new Set(query.normalize("NFC").match(/[\p{L}\p{N}]+/gu) ?? [])];
-    if (terms.length === 0) return [];
-    const expression = terms.map((term) => `"${term}"`).join(" OR ");
-    const rows = this.db
-      .prepare(`SELECT c.id,bm25(chunks_fts,0,3,2,1) AS score FROM chunks_fts
-      JOIN chunks c ON c.id=chunks_fts.chunk_id JOIN documents d ON d.id=c.document_id
-      WHERE chunks_fts MATCH ? ${bookId ? "AND d.book_id=?" : ""} ORDER BY score,c.id LIMIT ?`)
-      .all(expression, ...(bookId ? [bookId] : []), limit);
-    return rows.map((row) => ({ chunk: this.getChunk(String(row.id))!, score: Number(row.score) }));
   }
 
   status() {

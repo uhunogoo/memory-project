@@ -7,18 +7,13 @@ import { createEmbeddingProvider } from "./providers/index.js";
 import { appConfigSchema } from "./schemas/config.js";
 import { indexOptionsSchema } from "./schemas/library.js";
 import { searchInputSchema } from "./schemas/search.js";
-import type { SearchMode, SearchOptions } from "./schemas/search.js";
+import type { SearchOptions } from "./schemas/search.js";
 import { SqliteContentRepository } from "./storage/content.js";
 import type { IndexedSource } from "./storage/content.js";
-import { SqliteVectorRepository } from "./storage/vectors.js";
-import type { VectorRepository } from "./storage/vectors.js";
-import type {
-  AppConfig,
-  EmbeddingProvider,
-  IndexOptions,
-  SearchResult,
-  StoredChunk,
-} from "./types.js";
+import { SqliteSearchRepository } from "./storage/vectors.js";
+import type { SearchRepository, SearchResponse } from "./storage/search.js";
+export type { SearchResponse } from "./storage/search.js";
+import type { AppConfig, EmbeddingProvider, IndexOptions } from "./types.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -41,34 +36,42 @@ export interface IndexReport {
   warnings: string[];
 }
 
-export interface SearchResponse {
-  mode: SearchMode;
-  warnings: string[];
-  results: SearchResult[];
-}
-
 /** Orchestrates independent stores. Source changes and vector jobs commit together in content.sqlite. */
 export class BookLibrary {
   readonly config: AppConfig;
-  readonly content: SqliteContentRepository;
-  private vectors?: VectorRepository;
+  private contentRepository?: SqliteContentRepository;
+  private searchRepository?: SearchRepository;
   private readonly provider?: EmbeddingProvider;
 
   constructor(
     config: AppConfig,
-    dependencies: { provider?: EmbeddingProvider; vectors?: VectorRepository } = {},
+    dependencies: {
+      provider?: EmbeddingProvider;
+      search?: SearchRepository;
+      /** @deprecated Use search. */
+      vectors?: SearchRepository;
+    } = {},
   ) {
     this.config = parseLibraryConfig(config);
     this.provider =
       dependencies.provider ??
       (this.config.embedding ? createEmbeddingProvider(this.config.embedding) : undefined);
-    this.content = new SqliteContentRepository(join(this.config.dataDir, "content.sqlite"));
-    this.vectors = dependencies.vectors;
+    this.searchRepository = dependencies.search ?? dependencies.vectors;
   }
 
-  private vectorStore(): VectorRepository {
-    this.vectors ??= new SqliteVectorRepository(join(this.config.dataDir, "vectors.sqlite"));
-    return this.vectors;
+  get content(): SqliteContentRepository {
+    this.contentRepository ??= new SqliteContentRepository(
+      join(this.config.dataDir, "content.sqlite"),
+    );
+    return this.contentRepository;
+  }
+
+  private searchStore(): SearchRepository {
+    // Keep the existing filename so schema migration can reuse stored embeddings.
+    this.searchRepository ??= new SqliteSearchRepository(
+      join(this.config.dataDir, "vectors.sqlite"),
+    );
+    return this.searchRepository;
   }
 
   async index(options: IndexOptions = {}): Promise<IndexReport> {
@@ -121,7 +124,7 @@ export class BookLibrary {
         failed: 0,
         warnings: discovery.warnings,
       };
-      const embedding = await this.synchronizeVectors(embed !== false);
+      const embedding = await this.synchronizeSearch(embed !== false);
       Object.assign(report, {
         embedded: embedding.embedded,
         reused: embedding.reused,
@@ -147,7 +150,7 @@ export class BookLibrary {
     let run: number | undefined;
     try {
       run = this.content.startRun();
-      const report = await this.synchronizeVectors(true);
+      const report = await this.synchronizeSearch(true);
       this.content.finishRun(run, report.failed ? "partial" : "completed", report);
       return report;
     } catch (error) {
@@ -161,21 +164,31 @@ export class BookLibrary {
     }
   }
 
-  private async synchronizeVectors(
+  private async synchronizeSearch(
     generate: boolean,
   ): Promise<Pick<IndexReport, "embedded" | "reused" | "failed" | "warnings">> {
     const report = { embedded: 0, reused: 0, failed: 0, warnings: [] as string[] };
     const chunks = this.content.listChunks();
     const current = new Map(chunks.map((chunk) => [chunk.id, chunk]));
-    let vectors: VectorRepository;
+    // Payload delivery is retryable independently of embedding generation.
+    // The full snapshot also restores a lost/migrated search DB on index/embed.
+    for (const chunk of chunks) this.content.enqueueEmbedding(chunk, "*");
+    let vectors: SearchRepository;
     try {
-      vectors = this.vectorStore();
+      vectors = this.searchStore();
+      await vectors.upsertChunks(chunks);
+      for (const job of this.content.jobs()) {
+        if (job.operation === "upsert" && job.profileId === "*") this.content.completeJob(job.id);
+      }
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Search storage unavailable";
+      for (const job of this.content.jobs()) {
+        if (job.operation === "upsert" && job.profileId === "*")
+          this.content.failJob(job.id, message);
+      }
       if (this.provider)
         for (const chunk of chunks) this.content.enqueueEmbedding(chunk, this.provider.profileId);
-      report.warnings.push(
-        `Vector storage unavailable; text index is ready. ${error instanceof Error ? error.message : ""}`,
-      );
+      report.warnings.push(`Search index update failed; content is saved. ${message}`);
       report.failed = Math.max(1, chunks.length);
       return report;
     }
@@ -190,22 +203,22 @@ export class BookLibrary {
       if (!provider) {
         if (chunks.length)
           report.warnings.push(
-            "No embedding provider configured. Text index is ready; configure a provider and run embed for semantic search.",
+            "No embedding provider configured. Lexical search index is ready; configure a provider and run embed for semantic search.",
           );
         return report;
       }
       for (const chunk of chunks) {
-        if (!vectors.get(provider.profileId, chunk.id, chunk.inputHash))
+        if (!(await vectors.get(provider.profileId, chunk.id, chunk.inputHash)))
           this.content.enqueueEmbedding(chunk, provider.profileId);
       }
       // Reconcile cached vectors even with --no-embed: this performs no inference or HTTP calls.
       for (const job of this.content.jobs(provider.profileId)) {
         if (job.operation !== "upsert") continue;
         const cached =
-          vectors.get(provider.profileId, job.chunkId, job.inputHash) ??
-          vectors.findCached(provider.profileId, job.inputHash);
+          (await vectors.get(provider.profileId, job.chunkId, job.inputHash)) ??
+          (await vectors.findCached(provider.profileId, job.inputHash));
         if (!cached) continue;
-        vectors.upsert(provider.profileId, job.chunkId, job.inputHash, cached);
+        await vectors.upsert(provider.profileId, current.get(job.chunkId)!, cached);
         this.content.completeJob(job.id);
         report.reused++;
       }
@@ -222,16 +235,19 @@ export class BookLibrary {
         const pending = jobs
           .slice(offset, offset + batchSize)
           .filter((job) => current.get(job.chunkId)?.inputHash === job.inputHash);
-        const uncached = pending.filter((job) => {
+        const uncached = [];
+        for (const job of pending) {
           const vector =
-            vectors.get(provider.profileId, job.chunkId, job.inputHash) ??
-            vectors.findCached(provider.profileId, job.inputHash);
-          if (!vector) return true;
-          vectors.upsert(provider.profileId, job.chunkId, job.inputHash, vector);
+            (await vectors.get(provider.profileId, job.chunkId, job.inputHash)) ??
+            (await vectors.findCached(provider.profileId, job.inputHash));
+          if (!vector) {
+            uncached.push(job);
+            continue;
+          }
+          await vectors.upsert(provider.profileId, current.get(job.chunkId)!, vector);
           this.content.completeJob(job.id);
           report.reused++;
-          return false;
-        });
+        }
         if (!uncached.length) continue;
         try {
           // Deduplicate identical model inputs within a batch as well as across runs.
@@ -254,7 +270,7 @@ export class BookLibrary {
             documentPrefix,
             queryPrefix,
           } = provider.config;
-          vectors.ensureProfile(provider.profileId, embeddings[0]!.length, {
+          await vectors.ensureProfile(provider.profileId, embeddings[0]!.length, {
             provider: name,
             baseUrl,
             model,
@@ -264,10 +280,9 @@ export class BookLibrary {
           });
           const byHash = new Map(inputs.map(([inputHash], i) => [inputHash, embeddings[i]!]));
           for (const job of uncached) {
-            vectors.upsert(
+            await vectors.upsert(
               provider.profileId,
-              job.chunkId,
-              job.inputHash,
+              current.get(job.chunkId)!,
               byHash.get(job.inputHash)!,
             );
             this.content.completeJob(job.id);
@@ -287,12 +302,16 @@ export class BookLibrary {
       return report;
     } finally {
       // Delete only after retained inputs have moved to their new chunk IDs.
-      for (const entry of vectors.listEntries()) {
-        if (!current.has(entry.chunkId)) vectors.removeChunk(entry.chunkId);
+      const obsolete = new Set([
+        ...(await vectors.listChunkIds()),
+        ...(await vectors.listEntries()).map((entry) => entry.chunkId),
+      ]);
+      for (const chunkId of obsolete) {
+        if (!current.has(chunkId)) await vectors.removeChunk(chunkId);
       }
       for (const job of this.content.jobs()) {
         if (job.operation !== "delete") continue;
-        if (!current.has(job.chunkId)) vectors.removeChunk(job.chunkId);
+        if (!current.has(job.chunkId)) await vectors.removeChunk(job.chunkId);
         this.content.completeJob(job.id);
       }
     }
@@ -322,106 +341,53 @@ export class BookLibrary {
     if (searchQuery.length > 8192)
       throw new Error("Search query is too long (maximum 8192 characters).");
     if (limit < 1 || limit > 100) throw new Error("Search limit must be between 1 and 100.");
-    const response: SearchResponse = { mode, warnings: [], results: [] };
-    const candidates = Math.max(30, limit * 3);
-    const lexical =
-      mode === "vector"
-        ? []
-        : this.content.searchLexical(searchQuery, candidates, bookId).map(({ chunk }) => chunk);
-    let semantic: StoredChunk[] = [];
+    const store = this.searchStore();
+    const warnings: string[] = [];
+    let vector: number[] | undefined;
+    let effectiveMode = mode;
     if (mode !== "lexical") {
       try {
         if (!this.provider) throw new Error("No embedding provider configured.");
-        const vectors = this.vectorStore();
-        const eligible = this.content.listChunks(bookId);
-        const profileId = this.provider.profileId;
-        const indexed = new Map(
-          vectors
-            .listEntries()
-            .filter((entry) => entry.profileId === profileId)
-            .map((entry) => [entry.chunkId, entry.inputHash]),
-        );
-        const current = eligible.filter((chunk) => indexed.get(chunk.id) === chunk.inputHash);
-        if (current.length < eligible.length)
-          response.warnings.push(
-            "Semantic index is incomplete for the current profile. Run embed to update it.",
-          );
-        if (current.length) {
-          const queryVector = (await this.provider.embed([searchQuery], "query"))[0]!;
-          const results = vectors.search(
-            profileId,
-            queryVector,
-            candidates,
-            current.map(({ id, inputHash }) => ({ chunkId: id, inputHash })),
-          );
-          semantic = results.flatMap((match) => {
-            // Re-read after the HTTP call: an indexer may have changed the source meanwhile.
-            const chunk = this.content.getChunk(match.chunkId);
-            return chunk?.inputHash === match.inputHash && (!bookId || chunk.bookId === bookId)
-              ? [chunk]
-              : [];
-          });
-        } else if (eligible.length) {
-          response.warnings.push("No current embeddings found for this profile. Run embed.");
-        }
+        vector = (await this.provider.embed([searchQuery], "query"))[0];
+        if (!vector?.length) throw new Error("Provider returned an invalid query embedding.");
       } catch (error) {
         if (mode === "vector") throw error;
-        response.warnings.push(
+        effectiveMode = "lexical";
+        warnings.push(
           `Semantic search unavailable; returning lexical results. ${error instanceof Error ? error.message : ""}`,
         );
       }
     }
-    const merged = new Map<string, SearchResult>();
-    const add = (list: StoredChunk[], match: "lexical" | "vector") =>
-      list.forEach((chunk, rank) => {
-        // Search scores are ranks, not confidence probabilities.
-        const found = merged.get(chunk.id);
-        const contribution = 1 / (60 + rank + 1);
-        if (found) {
-          found.score += contribution;
-          found.matches.push(match);
-        } else merged.set(chunk.id, { ...chunk, score: contribution, matches: [match] });
-      });
-    add(lexical, "lexical");
-    add(semantic, "vector");
-    const ranked = [...merged.values()].sort(
-      (a, b) => b.score - a.score || a.id.localeCompare(b.id),
-    );
-    // Avoid spending the entire result list on substantially overlapping windows from one passage.
-    for (const candidate of ranked) {
-      const live = this.content.getChunk(candidate.id);
-      if (!live || live.inputHash !== candidate.inputHash) continue;
-      const duplicate = response.results.some((prior) => {
-        if (prior.documentId !== candidate.documentId) return false;
-        const overlap = Math.max(
-          0,
-          Math.min(prior.endOffset, candidate.endOffset) -
-            Math.max(prior.startOffset, candidate.startOffset),
-        );
-        return (
-          overlap /
-            Math.min(
-              prior.endOffset - prior.startOffset,
-              candidate.endOffset - candidate.startOffset,
-            ) >
-          0.6
-        );
-      });
-      if (!duplicate) response.results.push({ ...candidate, ...live });
-      if (response.results.length === limit) break;
+    const request = {
+      query: searchQuery,
+      mode: effectiveMode,
+      limit,
+      bookId,
+      profileId: this.provider?.profileId,
+      vector,
+    };
+    let response: SearchResponse;
+    try {
+      response = await store.search(request);
+    } catch (error) {
+      if (effectiveMode !== "hybrid") throw error;
+      warnings.push(
+        `Semantic search unavailable; returning lexical results. ${error instanceof Error ? error.message : ""}`,
+      );
+      response = await store.search({ ...request, mode: "lexical", vector: undefined });
     }
-    return response;
+    return { ...response, mode, warnings: [...warnings, ...response.warnings] };
   }
 
-  status() {
+  async status() {
     let vectorStatus: {
       count: number;
       profiles: { id: string; dimensions: number }[];
       error?: string;
     };
     try {
-      const vectors = this.vectorStore();
-      vectorStatus = { count: vectors.count(), profiles: vectors.listProfiles() };
+      const vectors = this.searchStore();
+      vectorStatus = { count: await vectors.count(), profiles: await vectors.listProfiles() };
     } catch (error) {
       vectorStatus = {
         count: 0,
@@ -436,11 +402,11 @@ export class BookLibrary {
     };
   }
 
-  close(): void {
+  async close(): Promise<void> {
     try {
-      this.vectors?.close();
+      await this.searchRepository?.close();
     } finally {
-      this.content.close();
+      this.contentRepository?.close();
     }
   }
 }
@@ -451,9 +417,9 @@ export async function initializeLibrary(config: AppConfig): Promise<void> {
   await mkdir(config.dataDir, { recursive: true });
   const library = new BookLibrary(config);
   try {
-    const status = library.status();
+    const status = await library.status();
     if (status.vectors.error) throw new Error(status.vectors.error);
   } finally {
-    library.close();
+    await library.close();
   }
 }

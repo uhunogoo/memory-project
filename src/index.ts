@@ -6,6 +6,7 @@ export { parseMarkdown, CHUNKER_VERSION } from "./ingestion/markdown.js";
 export { createEmbeddingProvider } from "./providers/index.js";
 export { SqliteContentRepository } from "./storage/content.js";
 export type { ContentRepository } from "./storage/content.js";
-export { SqliteVectorRepository } from "./storage/vectors.js";
+export { SqliteSearchRepository, SqliteVectorRepository } from "./storage/vectors.js";
 export type { VectorRepository } from "./storage/vectors.js";
+export type { SearchRepository, SearchRequest, IndexedChunk } from "./storage/search.js";
 export type * from "./types.js";

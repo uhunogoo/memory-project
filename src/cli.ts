@@ -67,7 +67,7 @@ async function main(): Promise<void> {
         break;
       }
       case "status":
-        result = library.status();
+        result = await library.status();
         break;
       case "books":
         result = library.content.listBooks();
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     }
     console.log(JSON.stringify(result, null, 2));
   } finally {
-    library.close();
+    await library.close();
   }
 }
 
