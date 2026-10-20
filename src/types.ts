@@ -1,7 +1,8 @@
-export interface ChunkOptions {
-  targetTokens: number;
-  overlapTokens: number;
-}
+import type { ChunkOptions, EmbeddingConfig } from "./schemas/config.js";
+import type { EmbeddingInputKind } from "./providers/schemas.js";
+
+export type { ChunkOptions, EmbeddingConfig } from "./schemas/config.js";
+export type { EmbeddingInputKind } from "./providers/schemas.js";
 
 export interface SourceFile {
   relativePath: string;
@@ -59,23 +60,10 @@ export interface ParsedDocument {
   chunks: ParsedChunk[];
 }
 
-export interface EmbeddingConfig {
-  provider: "ollama" | "openai-compatible";
-  baseUrl: string;
-  model: string;
-  apiKey?: string;
-  dimensions?: number;
-  batchSize: number;
-  timeoutMs: number;
-  retries: number;
-  documentPrefix: string;
-  queryPrefix: string;
-}
-
 export interface EmbeddingProvider {
   readonly profileId: string;
   readonly config: EmbeddingConfig;
-  embed(texts: string[], kind: "document" | "query"): Promise<number[][]>;
+  embed(texts: string[], kind: EmbeddingInputKind): Promise<number[][]>;
 }
 
 export interface AppConfig {

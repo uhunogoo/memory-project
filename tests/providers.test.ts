@@ -25,6 +25,62 @@ function json(value: unknown, status = 200): Response {
 }
 
 describe("embedding providers", () => {
+  it.each([
+    null,
+    [],
+    {},
+    config({ provider: "private-secret" as EmbeddingConfig["provider"] }),
+    { ...config(), baseUrl: 123 },
+    { ...config(), model: ["private-secret"] },
+    { ...config(), batchSize: "2" },
+    { ...config(), batchSize: 1.5 },
+    { ...config(), timeoutMs: null },
+    { ...config(), retries: Number.NaN },
+    { ...config(), dimensions: "2" },
+    { ...config(), documentPrefix: null },
+    { ...config(), queryPrefix: [] },
+    { ...config(), apiKey: { value: "private-secret" } },
+  ])("rejects malformed public provider configuration before HTTP %#", (value) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const create = () => createEmbeddingProvider(value as EmbeddingConfig, { fetch });
+    expect(create).toThrow("Invalid embedding configuration structure");
+    expect(create).not.toThrow("private-secret");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [null, "query"],
+    ["private-secret", "query"],
+    [[1], "query"],
+    [[null], "query"],
+    [[{ text: "private-secret" }], "query"],
+    [Array<string>(1), "query"],
+    [["text"], ""],
+    [["text"], "private-secret"],
+    [["text"], null],
+  ])(
+    "validates public embedding input structure without coercion or HTTP %#",
+    async (texts, kind) => {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const result = createEmbeddingProvider(config(), { fetch }).embed(
+        texts as string[],
+        kind as "document" | "query",
+      );
+      await expect(result).rejects.toThrow("Invalid embedding input structure");
+      await expect(result).rejects.not.toThrow("private-secret");
+      await expect(result).rejects.not.toHaveProperty("issues");
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps empty text rejection as a business rule after structural parsing", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(
+      createEmbeddingProvider(config(), { fetch }).embed([" \n"], "query"),
+    ).rejects.toThrow("Embedding inputs must be non-empty strings.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("batches Ollama inputs without truncation and preserves source text with its prefix", async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { loadConfig } from "../src/config.js";
+import { createEmbeddingProvider } from "../src/providers/index.js";
 
 let directory: string;
 
@@ -114,6 +115,44 @@ describe("configuration", () => {
       ),
     ).rejects.toThrow("embedding.dimensions must be an integer between 1 and 8192");
   });
+
+  it.each([
+    [{ model: "embed\0" }, "embedding.model"],
+    [{ documentPrefix: "prefix\0" }, "embedding.documentPrefix"],
+    [{ queryPrefix: "x".repeat(16_385) }, "embedding.queryPrefix"],
+    [{ batchSize: 257 }, "embedding.batchSize"],
+    [{ timeoutMs: 99 }, "embedding.timeoutMs"],
+    [{ retries: 6 }, "embedding.retries"],
+    [{ dimensions: 8193 }, "embedding.dimensions"],
+  ])(
+    "applies the same embedding business rules to file and programmatic inputs %#",
+    async (overrides, field) => {
+      const embedding = { provider: "ollama", model: "embed" };
+      const valid = await loadConfig(await configFile({ embedding }));
+      const path = await configFile({ embedding: { ...embedding, ...overrides } });
+      await expect(loadConfig(path)).rejects.toThrow(field);
+      expect(() => createEmbeddingProvider({ ...valid.embedding!, ...overrides })).toThrow(field);
+    },
+  );
+
+  it.each(["", " \t", "private-secret\n"])(
+    "rejects invalid credentials from env and direct calls without exposing them %#",
+    async (apiKey) => {
+      const valid = await loadConfig(
+        await configFile({ embedding: { provider: "ollama", model: "embed" } }),
+      );
+      vi.stubEnv("MEMORY_TEST_API_KEY", apiKey);
+      const path = await configFile({
+        embedding: { provider: "ollama", model: "embed", apiKeyEnv: "MEMORY_TEST_API_KEY" },
+      });
+      const result = loadConfig(path);
+      await expect(result).rejects.toThrow("missing or invalid");
+      await expect(result).rejects.not.toThrow("private-secret");
+      const create = () => createEmbeddingProvider({ ...valid.embedding!, apiKey });
+      expect(create).toThrow("missing or invalid");
+      expect(create).not.toThrow("private-secret");
+    },
+  );
 
   it.each([
     null,

@@ -7,7 +7,7 @@ import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { parse as parseYaml } from "yaml";
 import type { ChunkOptions, ParsedChunk, ParsedDocument, ParsedSection } from "../types.js";
-import { frontmatterSchema } from "./schemas.js";
+import { frontmatterSchema, parseMarkdownInputSchema } from "./schemas.js";
 
 // Revalidate previously indexed frontmatter once under the external metadata contract.
 export const CHUNKER_VERSION = "markdown-ast-v2";
@@ -234,19 +234,23 @@ function documentTitle(tree: AstNode, bookTitle: string): string {
 }
 
 export function parseMarkdown(
-  documentId: string,
-  markdown: string,
-  bookTitle: string,
-  options: ChunkOptions,
+  documentIdInput: string,
+  markdownInput: string,
+  bookTitleInput: string,
+  optionsInput: ChunkOptions,
 ): ParsedDocument {
-  if (!Number.isSafeInteger(options.targetTokens) || options.targetTokens < 1) {
+  const validation = parseMarkdownInputSchema.safeParse({
+    documentId: documentIdInput,
+    markdown: markdownInput,
+    bookTitle: bookTitleInput,
+    options: optionsInput,
+  });
+  if (!validation.success) throw new Error("Invalid Markdown parser input structure.");
+  const { documentId, markdown, bookTitle, options } = validation.data;
+  if (options.targetTokens < 1) {
     throw new Error("targetTokens must be a positive integer.");
   }
-  if (
-    !Number.isSafeInteger(options.overlapTokens) ||
-    options.overlapTokens < 0 ||
-    options.overlapTokens >= options.targetTokens
-  ) {
+  if (options.overlapTokens < 0 || options.overlapTokens >= options.targetTokens) {
     throw new Error("overlapTokens must be a non-negative integer smaller than targetTokens.");
   }
   const tree = parser.parse(markdown) as AstNode;

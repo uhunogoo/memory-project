@@ -13,26 +13,33 @@ function text(value: string | undefined, field: string, fallback?: string): stri
   return value;
 }
 
-function integer(
-  value: number | undefined,
-  field: string,
-  fallback: number,
-  minimum: number,
-  maximum: number,
-): number {
-  const number = value === undefined ? fallback : value;
-  if (number < minimum || number > maximum) {
+function integer(value: number, field: string, minimum: number, maximum: number): number {
+  if (value < minimum || value > maximum) {
     throw new Error(`${field} must be an integer between ${minimum} and ${maximum}.`);
   }
-  return number;
+  return value;
 }
 
-function prefix(value: string | undefined, field: string): string {
-  if (value === undefined) return "";
+function validatePrefix(value: string, field: string): void {
   if (value.length > 16_384 || value.includes("\0")) {
     throw new Error(`${field} must be a string of at most 16384 characters.`);
   }
-  return value;
+}
+
+/** Business rules shared by file loading and the public provider factory, after parsing. */
+export function validateEmbeddingConfigValues(config: EmbeddingConfig): void {
+  text(config.model, "embedding.model");
+  integer(config.batchSize, "embedding.batchSize", 1, 256);
+  integer(config.timeoutMs, "embedding.timeoutMs", 100, 600_000);
+  integer(config.retries, "embedding.retries", 0, 5);
+  if (config.dimensions !== undefined) {
+    integer(config.dimensions, "embedding.dimensions", 1, 8192);
+  }
+  validatePrefix(config.documentPrefix, "embedding.documentPrefix");
+  validatePrefix(config.queryPrefix, "embedding.queryPrefix");
+  if (config.apiKey !== undefined && (!config.apiKey.trim() || /[\r\n]/.test(config.apiKey))) {
+    throw new Error("The embedding API key is missing or invalid.");
+  }
 }
 
 /** Validate URLs without exposing embedded credentials in an error. */
@@ -64,15 +71,15 @@ function embeddingConfig(embedding: EmbeddingFileConfig): EmbeddingConfig {
         embedding.provider === "ollama" ? "http://127.0.0.1:11434" : undefined,
       ),
     ),
-    model: text(embedding.model, "embedding.model"),
-    batchSize: integer(embedding.batchSize, "embedding.batchSize", 16, 1, 256),
-    timeoutMs: integer(embedding.timeoutMs, "embedding.timeoutMs", 60_000, 100, 600_000),
-    retries: integer(embedding.retries, "embedding.retries", 2, 0, 5),
-    documentPrefix: prefix(embedding.documentPrefix, "embedding.documentPrefix"),
-    queryPrefix: prefix(embedding.queryPrefix, "embedding.queryPrefix"),
+    model: embedding.model,
+    batchSize: embedding.batchSize ?? 16,
+    timeoutMs: embedding.timeoutMs ?? 60_000,
+    retries: embedding.retries ?? 2,
+    documentPrefix: embedding.documentPrefix ?? "",
+    queryPrefix: embedding.queryPrefix ?? "",
   };
   if (embedding.dimensions !== undefined) {
-    config.dimensions = integer(embedding.dimensions, "embedding.dimensions", 0, 1, 8192);
+    config.dimensions = embedding.dimensions;
   }
   if (embedding.apiKeyEnv !== undefined) {
     const variable = text(embedding.apiKeyEnv, "embedding.apiKeyEnv");
@@ -80,13 +87,14 @@ function embeddingConfig(embedding: EmbeddingFileConfig): EmbeddingConfig {
       throw new Error("embedding.apiKeyEnv must name a valid environment variable.");
     }
     const key = process.env[variable];
-    if (!key || key.trim().length === 0 || /[\r\n]/.test(key)) {
+    if (key === undefined) {
       throw new Error(
         "The environment variable configured by embedding.apiKeyEnv is missing or invalid.",
       );
     }
     config.apiKey = key;
   }
+  validateEmbeddingConfigValues(config);
   return config;
 }
 
@@ -119,11 +127,10 @@ export async function loadConfig(configPath?: string): Promise<AppConfig> {
   }
   const raw = validation.data;
   const chunking = raw.chunking ?? {};
-  const targetTokens = integer(chunking.targetTokens, "chunking.targetTokens", 800, 64, 16_384);
+  const targetTokens = integer(chunking.targetTokens ?? 800, "chunking.targetTokens", 64, 16_384);
   const overlapTokens = integer(
-    chunking.overlapTokens,
+    chunking.overlapTokens ?? Math.min(100, Math.floor(targetTokens / 8)),
     "chunking.overlapTokens",
-    Math.min(100, Math.floor(targetTokens / 8)),
     0,
     targetTokens - 1,
   );

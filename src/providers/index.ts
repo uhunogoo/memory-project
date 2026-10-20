@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
 
-import { normalizeBaseUrl } from "../config.js";
-import type { EmbeddingConfig, EmbeddingProvider } from "../types.js";
+import { normalizeBaseUrl, validateEmbeddingConfigValues } from "../config.js";
+import { embeddingConfigSchema } from "../schemas/config.js";
+import type { EmbeddingConfig, EmbeddingInputKind, EmbeddingProvider } from "../types.js";
 
-import { ollamaEmbeddingResponseSchema, openAiEmbeddingResponseSchema } from "./schemas.js";
+import {
+  embeddingInputSchema,
+  ollamaEmbeddingResponseSchema,
+  openAiEmbeddingResponseSchema,
+} from "./schemas.js";
 
 export interface ProviderOptions {
   /** Dependency injection for tests or custom HTTP transports. */
@@ -37,7 +42,7 @@ class HttpFailure extends Error {
 class TransportFailure extends Error {}
 
 function endpoint(config: EmbeddingConfig): string {
-  const base = normalizeBaseUrl(config.baseUrl);
+  const base = config.baseUrl;
   if (config.provider === "ollama") {
     if (base.endsWith("/api/embed")) return base;
     return base.endsWith("/api") ? `${base}/embed` : `${base}/api/embed`;
@@ -115,37 +120,6 @@ function validateVector(value: number[], dimensions?: number): number[] {
   return value;
 }
 
-function validateRuntimeConfig(config: EmbeddingConfig): void {
-  if (!["ollama", "openai-compatible"].includes(config.provider))
-    throw new Error("Unsupported embedding provider.");
-  if (typeof config.model !== "string" || !config.model.trim())
-    throw new Error("An embedding model is required.");
-  for (const [name, minimum, maximum] of [
-    ["batchSize", 1, 256],
-    ["timeoutMs", 100, 600_000],
-    ["retries", 0, 5],
-  ] as const) {
-    if (!Number.isInteger(config[name]) || config[name] < minimum || config[name] > maximum) {
-      throw new Error(`Invalid embedding ${name}.`);
-    }
-  }
-  if (
-    config.dimensions !== undefined &&
-    (!Number.isInteger(config.dimensions) || config.dimensions < 1 || config.dimensions > 8192)
-  ) {
-    throw new Error("Invalid embedding dimensions.");
-  }
-  if (typeof config.documentPrefix !== "string" || typeof config.queryPrefix !== "string") {
-    throw new Error("Embedding prefixes must be strings.");
-  }
-  if (
-    config.apiKey !== undefined &&
-    (typeof config.apiKey !== "string" || !config.apiKey.trim() || /[\r\n]/.test(config.apiKey))
-  ) {
-    throw new Error("The embedding API key is invalid.");
-  }
-}
-
 class HttpEmbeddingProvider implements EmbeddingProvider {
   readonly config: EmbeddingConfig;
   readonly profileId: string;
@@ -154,7 +128,12 @@ class HttpEmbeddingProvider implements EmbeddingProvider {
   private observedDimensions: number | undefined;
 
   constructor(config: EmbeddingConfig, options: ProviderOptions) {
-    validateRuntimeConfig(config);
+    const validation = embeddingConfigSchema.safeParse(config);
+    if (!validation.success) {
+      throw new Error("Invalid embedding configuration structure. Check field types and provider.");
+    }
+    config = validation.data;
+    validateEmbeddingConfigValues(config);
     this.config = Object.freeze({ ...config, baseUrl: normalizeBaseUrl(config.baseUrl) });
     this.url = endpoint(this.config);
     this.fetch = options.fetch ?? globalThis.fetch;
@@ -174,14 +153,17 @@ class HttpEmbeddingProvider implements EmbeddingProvider {
       .digest("hex");
   }
 
-  async embed(texts: string[], kind: "document" | "query"): Promise<number[][]> {
-    if (
-      !Array.isArray(texts) ||
-      texts.some((value) => typeof value !== "string" || !value.trim())
-    ) {
+  async embed(texts: string[], kind: EmbeddingInputKind): Promise<number[][]> {
+    const validation = embeddingInputSchema.safeParse({ texts, kind });
+    if (!validation.success) {
+      throw new Error(
+        "Invalid embedding input structure: expected strings and a document/query kind.",
+      );
+    }
+    ({ texts, kind } = validation.data);
+    if (texts.some((value) => !value.trim())) {
       throw new Error("Embedding inputs must be non-empty strings.");
     }
-    if (kind !== "document" && kind !== "query") throw new Error("Invalid embedding input kind.");
     if (texts.length === 0) return [];
     const prefix = kind === "document" ? this.config.documentPrefix : this.config.queryPrefix;
     const input = texts.map((value) => prefix + value);

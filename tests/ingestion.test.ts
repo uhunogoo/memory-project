@@ -126,6 +126,37 @@ describe("book discovery", () => {
 });
 
 describe("Markdown AST sections and chunks", () => {
+  it.each([
+    [null, "Text", "Book", normalOptions],
+    ["doc", null, "Book", normalOptions],
+    ["doc", ["Text"], "Book", normalOptions],
+    ["doc", "Text", 123, normalOptions],
+    ["doc", "Text", "Book", null],
+    ["doc", "Text", "Book", undefined],
+    ["doc", "Text", "Book", {}],
+    ["doc", "Text", "Book", { targetTokens: 800 }],
+    ["doc", "Text", "Book", { targetTokens: "800", overlapTokens: 100 }],
+    ["doc", "Text", "Book", { targetTokens: 800, overlapTokens: "100" }],
+    ["doc", "Text", "Book", { targetTokens: 800.5, overlapTokens: 100 }],
+    ["doc", "Text", "Book", { targetTokens: 800, overlapTokens: Number.NaN }],
+    ["doc", "Text", "Book", { targetTokens: Number.POSITIVE_INFINITY, overlapTokens: 100 }],
+    ["doc", "Text", "Book", { targetTokens: Number.MAX_SAFE_INTEGER + 1, overlapTokens: 100 }],
+  ])("rejects malformed parser arguments without coercion: %j", (...args) => {
+    expect(() => parseMarkdown(...(args as Parameters<typeof parseMarkdown>))).toThrow(
+      "Invalid Markdown parser input structure.",
+    );
+  });
+
+  it("does not include document contents or input values in structural errors", () => {
+    const markdown = "# Private title\nSensitive source text";
+    expect(() =>
+      parseMarkdown("doc", markdown, "Private book", {
+        targetTokens: "secret-value",
+        overlapTokens: 100,
+      } as unknown as Parameters<typeof parseMarkdown>[3]),
+    ).toThrowError(new Error("Invalid Markdown parser input structure."));
+  });
+
   it.each(["title: 123", "title: [one, two]", "title: null", "- one\n- two", "a scalar"])(
     "rejects unsupported frontmatter structure: %s",
     (yaml) => {
@@ -309,6 +340,9 @@ describe("Markdown AST sections and chunks", () => {
     expect(() =>
       parseMarkdown("document", "Text", "Book", { targetTokens: 0, overlapTokens: 0 }),
     ).toThrow(/targetTokens/);
+    expect(() =>
+      parseMarkdown("document", "Text", "Book", { targetTokens: 50, overlapTokens: -1 }),
+    ).toThrow(/overlapTokens/);
     expect(() =>
       parseMarkdown("document", "Text", "Book", { targetTokens: 50, overlapTokens: 50 }),
     ).toThrow(/overlapTokens/);

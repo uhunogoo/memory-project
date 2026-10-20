@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { parseArgs } from "node:util";
+import { parseCliArguments } from "./cli-args.js";
 import { loadConfig } from "./config.js";
 import { BookLibrary, initializeLibrary } from "./library.js";
 
@@ -32,41 +32,12 @@ Only embedding requests use your configured provider. No answers are generated.
 `;
 
 async function main(): Promise<void> {
-  const { values, positionals } = parseArgs({
-    allowPositionals: true,
-    options: {
-      config: { type: "string" },
-      mode: { type: "string" },
-      limit: { type: "string" },
-      book: { type: "string" },
-      json: { type: "boolean" },
-      "no-embed": { type: "boolean" },
-      help: { type: "boolean" },
-    },
-  });
-  const [command, ...args] = positionals;
-  if (values.help || !command) {
+  const parsed = parseCliArguments(process.argv.slice(2));
+  if (!parsed) {
     console.log(help);
     return;
   }
-  const commands = [
-    "init",
-    "index",
-    "embed",
-    "status",
-    "books",
-    "sections",
-    "chunks",
-    "get",
-    "document",
-    "search",
-  ];
-  if (!commands.includes(command)) throw new Error(`Unknown command: ${command}. Use --help.`);
-  const takesArgument = ["get", "document", "search"].includes(command);
-  if ((takesArgument && args.length !== 1) || (!takesArgument && args.length !== 0))
-    throw new Error(`Invalid arguments for ${command}. Use --help; quote the search query.`);
-  if (values.mode && !["lexical", "vector", "hybrid"].includes(values.mode))
-    throw new Error("--mode must be lexical, vector or hybrid.");
+  const { command, args, values } = parsed;
   const config = await loadConfig(values.config);
   if (command === "init") {
     await initializeLibrary(config);
@@ -117,7 +88,7 @@ async function main(): Promise<void> {
         break;
       case "search": {
         const response = await library.search(args[0]!, {
-          mode: values.mode as "lexical" | "vector" | "hybrid" | undefined,
+          mode: values.mode,
           limit: values.limit === undefined ? undefined : Number(values.limit),
           bookId: values.book,
         });

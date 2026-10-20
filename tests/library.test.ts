@@ -69,6 +69,71 @@ afterEach(async () => {
 });
 
 describe("book library integration", () => {
+  it.each([
+    [undefined, {}, "Search query must be a string."],
+    [42, {}, "Search query must be a string."],
+    [{ value: "private-search-input" }, {}, "Search query must be a string."],
+    ["query", null, "Search options must be an object."],
+    ["query", [], "Search options must be an object."],
+    ["query", "private-search-input", "Search options must be an object."],
+    ["query", { mode: "" }, "Search mode must be lexical, vector or hybrid."],
+    ["query", { mode: "private-search-input" }, "Search mode must be lexical, vector or hybrid."],
+    ["query", { mode: null }, "Search mode must be lexical, vector or hybrid."],
+    ["query", { limit: "10" }, "Search limit must be between 1 and 100."],
+    ["query", { limit: 1.5 }, "Search limit must be between 1 and 100."],
+    ["query", { limit: Number.NaN }, "Search limit must be between 1 and 100."],
+    ["query", { limit: Number.POSITIVE_INFINITY }, "Search limit must be between 1 and 100."],
+    ["query", { bookId: ["private-search-input"] }, "Search book ID must be a string."],
+  ] as const)(
+    "rejects malformed search input before reading stores or embedding %#",
+    async (query, options, message) => {
+      const provider = fakeProvider();
+      const library = openLibrary({ provider });
+      const lexical = vi.spyOn(library.content, "searchLexical");
+      const chunks = vi.spyOn(library.content, "listChunks");
+      // JavaScript callers can bypass the public TypeScript signature.
+      const search = library.search.bind(library) as (
+        query: unknown,
+        options: unknown,
+      ) => Promise<unknown>;
+      const response = search(query, options);
+
+      await expect(response).rejects.toThrow(message);
+      await expect(response).rejects.not.toThrow("private-search-input");
+      expect(lexical).not.toHaveBeenCalled();
+      expect(chunks).not.toHaveBeenCalled();
+      expect(provider.embed).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [" \t\n", undefined, "Search query must not be empty."],
+    ["a".repeat(8193), undefined, "Search query is too long"],
+    ["query", 0, "Search limit must be between 1 and 100."],
+    ["query", 101, "Search limit must be between 1 and 100."],
+  ] as const)(
+    "retains query and result-limit policies after structural validation %#",
+    async (query, limit, message) => {
+      const library = openLibrary();
+      await expect(library.search(query, { mode: "lexical", limit })).rejects.toThrow(message);
+    },
+  );
+
+  it("keeps search defaults and ignores unknown options from JavaScript clients", async () => {
+    const library = openLibrary();
+    const lexical = vi.spyOn(library.content, "searchLexical");
+    expect(await library.search("query")).toMatchObject({ mode: "hybrid", results: [] });
+    expect(lexical).toHaveBeenLastCalledWith("query", 30, undefined);
+
+    const options = { mode: "lexical" as const, limit: 100, ignored: "extra metadata" };
+    expect(await library.search("query", options)).toEqual({
+      mode: "lexical",
+      warnings: [],
+      results: [],
+    });
+    expect(lexical).toHaveBeenLastCalledWith("query", 300, undefined);
+  });
+
   it("indexes nested book files into both databases and returns exact citations", async () => {
     const source = "# Морські подорожі\n\nМореплавство потребує знання вітрів.\n";
     await bookFile("Подорожі", "частина-1/02-море.md", source);

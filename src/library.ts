@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { discoverBooks } from "./ingestion/books.js";
 import { CHUNKER_VERSION, parseMarkdown } from "./ingestion/markdown.js";
 import { createEmbeddingProvider } from "./providers/index.js";
+import { searchInputSchema } from "./schemas/search.js";
+import type { SearchMode, SearchOptions } from "./schemas/search.js";
 import { SqliteContentRepository } from "./storage/content.js";
 import type { IndexedSource } from "./storage/content.js";
 import { SqliteVectorRepository } from "./storage/vectors.js";
@@ -24,7 +26,7 @@ export interface IndexReport {
 }
 
 export interface SearchResponse {
-  mode: "lexical" | "vector" | "hybrid";
+  mode: SearchMode;
   warnings: string[];
   results: SearchResult[];
 }
@@ -273,28 +275,42 @@ export class BookLibrary {
     }
   }
 
-  async search(
-    query: string,
-    options: { mode?: "lexical" | "vector" | "hybrid"; limit?: number; bookId?: string } = {},
-  ): Promise<SearchResponse> {
-    const mode = options.mode ?? "hybrid";
-    const limit = options.limit ?? 10;
-    if (!query.trim()) throw new Error("Search query must not be empty.");
-    if (query.length > 8192) throw new Error("Search query is too long (maximum 8192 characters).");
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100)
-      throw new Error("Search limit must be between 1 and 100.");
+  async search(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
+    const validation = searchInputSchema.safeParse({ query, options });
+    if (!validation.success) {
+      switch (validation.error.issues[0]?.path.join(".")) {
+        case "query":
+          throw new Error("Search query must be a string.");
+        case "options.mode":
+          throw new Error("Search mode must be lexical, vector or hybrid.");
+        case "options.limit":
+          throw new Error("Search limit must be between 1 and 100.");
+        case "options.bookId":
+          throw new Error("Search book ID must be a string.");
+        default:
+          throw new Error("Search options must be an object.");
+      }
+    }
+    const {
+      query: searchQuery,
+      options: { mode = "hybrid", limit = 10, bookId },
+    } = validation.data;
+    if (!searchQuery.trim()) throw new Error("Search query must not be empty.");
+    if (searchQuery.length > 8192)
+      throw new Error("Search query is too long (maximum 8192 characters).");
+    if (limit < 1 || limit > 100) throw new Error("Search limit must be between 1 and 100.");
     const response: SearchResponse = { mode, warnings: [], results: [] };
     const candidates = Math.max(30, limit * 3);
     const lexical =
       mode === "vector"
         ? []
-        : this.content.searchLexical(query, candidates, options.bookId).map(({ chunk }) => chunk);
+        : this.content.searchLexical(searchQuery, candidates, bookId).map(({ chunk }) => chunk);
     let semantic: StoredChunk[] = [];
     if (mode !== "lexical") {
       try {
         if (!this.provider) throw new Error("No embedding provider configured.");
         const vectors = this.vectorStore();
-        const eligible = this.content.listChunks(options.bookId);
+        const eligible = this.content.listChunks(bookId);
         const profileId = this.provider.profileId;
         const indexed = new Map(
           vectors
@@ -308,7 +324,7 @@ export class BookLibrary {
             "Semantic index is incomplete for the current profile. Run embed to update it.",
           );
         if (current.length) {
-          const queryVector = (await this.provider.embed([query], "query"))[0]!;
+          const queryVector = (await this.provider.embed([searchQuery], "query"))[0]!;
           const results = vectors.search(
             profileId,
             queryVector,
@@ -318,8 +334,7 @@ export class BookLibrary {
           semantic = results.flatMap((match) => {
             // Re-read after the HTTP call: an indexer may have changed the source meanwhile.
             const chunk = this.content.getChunk(match.chunkId);
-            return chunk?.inputHash === match.inputHash &&
-              (!options.bookId || chunk.bookId === options.bookId)
+            return chunk?.inputHash === match.inputHash && (!bookId || chunk.bookId === bookId)
               ? [chunk]
               : [];
           });
