@@ -87,9 +87,11 @@ export interface StoredChunk extends ParsedChunk {
 }
 
 export interface SearchResult extends StoredChunk {
-  /** RRF score, or the position-aware blend when rerankScore is present. */
+  /** RRF without reranking; otherwise the selected strategy's final score. */
   score: number;
   rrfScore?: number;
   rerankScore?: number;
+  /** One-based position in the candidate pool before reranking. */
+  retrievalRank?: number;
   matches: ("lexical" | "vector")[];
 }

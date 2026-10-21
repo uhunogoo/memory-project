@@ -26,6 +26,7 @@ Options:
   --json                       Machine-readable JSON output
   --no-embed                   Update text without requesting embeddings
   --no-rerank                  Skip the configured reranker for this search
+  --rerank-strategy score|blend Ranking after reranking (default: score)
   --help                       Show help
 
 Without model configuration, indexing and lexical search work offline.
@@ -93,6 +94,7 @@ async function main(): Promise<void> {
           limit: values.limit === undefined ? undefined : Number(values.limit),
           bookId: values.book,
           rerank: values["no-rerank"] ? false : undefined,
+          rerankStrategy: values.rerankStrategy,
         });
         if (values.json) {
           result = response;
@@ -101,11 +103,17 @@ async function main(): Promise<void> {
         for (const warning of response.warnings) console.error(`Warning: ${warning}`);
         if (!response.results.length) console.log("No matches.");
         for (const [index, item] of response.results.entries()) {
+          const scoreLabel =
+            item.rerankScore === undefined
+              ? "RRF"
+              : values.rerankStrategy === "blend"
+                ? "Blended"
+                : "Rerank";
           console.log(
             `\n${index + 1}. ${item.bookTitle} / ${item.headingPath.join(" / ") || "(preamble)"}`,
           );
           console.log(
-            `${item.relativePath}#${item.anchor} · lines ${item.startLine}–${item.endLine} · ${item.matches.join("+")} · ${item.rerankScore === undefined ? "RRF" : "Blended"} ${item.score.toFixed(5)}`,
+            `${item.relativePath}#${item.anchor} · lines ${item.startLine}–${item.endLine} · ${item.matches.join("+")} · ${scoreLabel} ${item.score.toFixed(5)}`,
           );
           console.log(`chunk: ${item.id}\ndocument: ${item.documentId}\n\n${item.markdown}`);
         }

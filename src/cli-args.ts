@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { rerankStrategySchema } from "./reranking.js";
 import { searchModeSchema } from "./storage/search.js";
 
 const commandSchema = z.enum([
@@ -27,6 +28,7 @@ export function parseCliArguments(argv: string[]) {
       json: { type: "boolean" },
       "no-embed": { type: "boolean" },
       "no-rerank": { type: "boolean" },
+      "rerank-strategy": { type: "string" },
       help: { type: "boolean" },
     },
   });
@@ -39,5 +41,14 @@ export function parseCliArguments(argv: string[]) {
     throw new Error(`Invalid arguments for ${command.data}. Use --help; quote the search query.`);
   const mode = searchModeSchema.optional().safeParse(values.mode);
   if (!mode.success) throw new Error("--mode must be lexical, vector or hybrid.");
-  return { command: command.data, args, values: { ...values, mode: mode.data } };
+  const rerankStrategy = rerankStrategySchema.optional().safeParse(values["rerank-strategy"]);
+  if (!rerankStrategy.success) throw new Error("--rerank-strategy must be score or blend.");
+  if (values["no-rerank"] && rerankStrategy.data !== undefined) {
+    throw new Error("--no-rerank cannot be combined with --rerank-strategy.");
+  }
+  return {
+    command: command.data,
+    args,
+    values: { ...values, mode: mode.data, rerankStrategy: rerankStrategy.data },
+  };
 }

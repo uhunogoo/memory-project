@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import * as sqliteVec from "sqlite-vec";
 import type { SearchResult, StoredChunk } from "../types.js";
 import { z } from "zod";
+import { rerankStrategySchema } from "../reranking.js";
 
 export const searchModeSchema = z.enum(["lexical", "vector", "hybrid"]);
 
@@ -13,6 +14,7 @@ const searchOptionsSchema = z.object({
   limit: z.number().int().optional(),
   bookId: z.string().optional(),
   rerank: z.boolean().optional(),
+  rerankStrategy: rerankStrategySchema.optional(),
 });
 
 // Public input structure only; defaults and query/limit policies stay in the library.

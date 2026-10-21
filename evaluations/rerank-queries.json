@@ -1,0 +1,125 @@
+{
+  "source": "/tmp/memory-relevance-2026-10-21.md",
+  "cases": [
+    {
+      "id": "q01",
+      "query": "Чим небезпечна передчасна абстракція?",
+      "answerable": true,
+      "expectedSections": ["1.1.1."]
+    },
+    {
+      "id": "q02",
+      "query": "Чи варто додавати підтримку PostgreSQL, якщо застосунок використовує лише SQLite?",
+      "answerable": true,
+      "expectedSections": ["1.1.1."]
+    },
+    {
+      "id": "q03",
+      "query": "Що робити, якщо пошуковий індекс пошкодиться?",
+      "answerable": true,
+      "expectedSections": ["1.2."]
+    },
+    {
+      "id": "q04",
+      "query": "Яку інформацію має містити корисний журнал помилок?",
+      "answerable": true,
+      "expectedSections": ["1.2.1."]
+    },
+    {
+      "id": "q05",
+      "query": "Чому не варто поливати всі рослини щодня?",
+      "answerable": true,
+      "expectedSections": ["2.1."]
+    },
+    {
+      "id": "q06",
+      "query": "Чому отвори в горщику не рятують корені від нестачі повітря?",
+      "answerable": true,
+      "expectedSections": ["2.1.1."]
+    },
+    {
+      "id": "q07",
+      "query": "Чому витягуються пагони?",
+      "answerable": true,
+      "expectedSections": ["2.2.1."]
+    },
+    {
+      "id": "q08",
+      "query": "Як зміна освітлення впливає на потребу в поливі?",
+      "answerable": true,
+      "expectedSections": ["2.2."]
+    },
+    {
+      "id": "q09",
+      "query": "чому знайомий текст важко пояснити самостійно",
+      "answerable": true,
+      "expectedSections": ["3.1."]
+    },
+    {
+      "id": "q10",
+      "query": "Як перевірити, що я зрозумів прочитане, а не просто впізнаю слова?",
+      "answerable": true,
+      "expectedSections": ["3.1."]
+    },
+    {
+      "id": "q11",
+      "query": "Як розподіляти повторення матеріалу в часі?",
+      "answerable": true,
+      "expectedSections": ["3.1.1."]
+    },
+    {
+      "id": "q12",
+      "query": "Навіщо зберігати посилання на першоджерело у нотатках?",
+      "answerable": true,
+      "expectedSections": ["3.2."]
+    },
+    {
+      "id": "q13",
+      "query": "Чому за містом можна побачити більше зірок?",
+      "answerable": true,
+      "expectedSections": ["4.1."]
+    },
+    {
+      "id": "q14",
+      "query": "Навіщо астрономи використовують червоне світло?",
+      "answerable": true,
+      "expectedSections": ["4.1.1."]
+    },
+    {
+      "id": "q15",
+      "query": "Що записувати в журнал спостережень за небом?",
+      "answerable": true,
+      "expectedSections": ["4.2."]
+    },
+    {
+      "id": "q16",
+      "query": "Чому однакова порада не підходить для всіх ситуацій?",
+      "answerable": true,
+      "expectedSections": ["5.2."]
+    },
+    {
+      "id": "q17",
+      "query": "Яка столиця Австралії?",
+      "answerable": false,
+      "expectedSections": []
+    },
+    {
+      "id": "q18",
+      "query": "Яка рекомендована доза ібупрофену?",
+      "answerable": false,
+      "expectedSections": []
+    },
+    {
+      "id": "q19",
+      "query": "Яка відстань від Землі до Марса в кілометрах?",
+      "answerable": false,
+      "expectedSections": []
+    },
+    {
+      "id": "q20",
+      "query": "Скільки мілілітрів води потрібно кактусу щодня?",
+      "answerable": false,
+      "expectedSections": []
+    }
+  ]
+}

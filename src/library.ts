@@ -5,6 +5,7 @@ import { discoverBooks } from "./ingestion/books.js";
 import { CHUNKER_VERSION, parseMarkdown } from "./ingestion/markdown.js";
 import { createEmbeddingProvider } from "./providers/index.js";
 import { createRerankProvider } from "./providers/rerank.js";
+import { rankRerankedResults } from "./reranking.js";
 import { appConfigSchema } from "./config.js";
 import { z } from "zod";
 import { searchInputSchema } from "./storage/search.js";
@@ -242,19 +243,25 @@ export class BookLibrary {
           throw new Error("Search book ID must be a string.");
         case "options.rerank":
           throw new Error("Search rerank must be a boolean.");
+        case "options.rerankStrategy":
+          throw new Error("Rerank strategy must be score or blend.");
         default:
           throw new Error("Search options must be an object.");
       }
     }
     const {
       query: searchQuery,
-      options: { mode = "hybrid", limit = 10, bookId, rerank },
+      options: { mode = "hybrid", limit = 10, bookId, rerank, rerankStrategy = "score" },
     } = validation.data;
     if (!searchQuery.trim()) throw new Error("Search query must not be empty.");
     if (searchQuery.length > 8192)
       throw new Error("Search query is too long (maximum 8192 characters).");
     if (limit < 1 || limit > 100) throw new Error("Search limit must be between 1 and 100.");
-    if (rerank === true && !this.reranker) {
+    const explicitStrategy = validation.data.options.rerankStrategy !== undefined;
+    if (rerank === false && explicitStrategy) {
+      throw new Error("Rerank strategy cannot be combined with rerank: false.");
+    }
+    if ((rerank === true || explicitStrategy) && !this.reranker) {
       throw new Error("Configure a reranker before requesting reranking.");
     }
     const reranker = rerank === false ? undefined : this.reranker;
@@ -292,24 +299,7 @@ export class BookLibrary {
           searchQuery,
           candidates.map((candidate) => candidate.embeddingText),
         );
-        // QMD's position-aware blend protects strong retrieval matches while
-        // giving the model more influence further down the candidate list.
-        // https://github.com/tobi/qmd/blob/main/src/store.ts
-        response.results = scores
-          .map(({ index, score }) => {
-            const candidate = candidates[index]!;
-            const rank = index + 1;
-            const weight = rank <= 3 ? 0.75 : rank <= 10 ? 0.6 : 0.4;
-            return {
-              ...candidate,
-              rrfScore: candidate.score,
-              rerankScore: score,
-              score: weight / rank + (1 - weight) * score,
-              rank,
-            };
-          })
-          .sort((a, b) => b.score - a.score || a.rank - b.rank)
-          .map(({ rank: _rank, ...result }) => result);
+        response.results = rankRerankedResults(candidates, scores, rerankStrategy);
       } catch {
         // Keep retrieval scores/order and avoid leaking provider data in warnings.
         warnings.push("Reranking unavailable; returning retrieval results.");

@@ -70,6 +70,36 @@ function embedding(): EmbeddingProvider {
 }
 
 describe("search reranking", () => {
+  it("promotes the 0.84 match above the initial 0.10 retrieval leader", async () => {
+    await books(2);
+    const model = reranker();
+    model.rerank.mockResolvedValue([
+      { index: 0, score: 0.1 },
+      { index: 1, score: 0.84 },
+    ]);
+    const library = open({ reranker: model });
+    await library.index();
+    const baseline = await library.search("матеріал", { mode: "lexical", rerank: false });
+
+    const result = await library.search("матеріал", { mode: "lexical" });
+
+    expect(result.results.map((chunk) => chunk.id)).toEqual([
+      baseline.results[1]!.id,
+      baseline.results[0]!.id,
+    ]);
+    expect(result.results.map((chunk) => chunk.score)).toEqual([0.84, 0.1]);
+
+    const blended = await library.search("матеріал", {
+      mode: "lexical",
+      rerankStrategy: "blend",
+    });
+    expect(blended.results.map((chunk) => chunk.id)).toEqual(
+      baseline.results.map((chunk) => chunk.id),
+    );
+    expect(blended.results[0]!.score).toBeCloseTo(0.775);
+    expect(blended.results[1]!.score).toBeCloseTo(0.585);
+  });
+
   it.each(["lexical", "vector", "hybrid"] as const)(
     "reranks a bounded pool before limiting %s results and keeps citations and book filters",
     async (mode) => {
@@ -99,24 +129,45 @@ describe("search reranking", () => {
         baseline.results.slice(0, 40).map((chunk) => chunk.embeddingText),
       );
       expect(result.results.map((chunk) => chunk.id)).toEqual([
-        baseline.results[0]!.id,
         baseline.results[19]!.id,
+        baseline.results[0]!.id,
       ]);
       expect(result.results[0]).toEqual({
-        ...baseline.results[0],
-        rrfScore: baseline.results[0]!.score,
-        rerankScore: 0,
-        score: 0.75,
-      });
-      expect(result.results[1]).toEqual({
         ...baseline.results[19],
         rrfScore: baseline.results[19]!.score,
         rerankScore: 1,
-        score: 0.62,
+        retrievalRank: 20,
+        score: 1,
+      });
+      expect(result.results[1]).toEqual({
+        ...baseline.results[0],
+        rrfScore: baseline.results[0]!.score,
+        rerankScore: 0,
+        retrievalRank: 1,
+        score: 0,
       });
       expect(contentRead).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps retrieval order for ties and retains low and zero scores", async () => {
+    await books(3);
+    const model = reranker();
+    model.rerank.mockResolvedValue([
+      { index: 2, score: 0 },
+      { index: 1, score: 0.1 },
+      { index: 0, score: 0.1 },
+    ]);
+    const library = open({ reranker: model });
+    await library.index();
+    const baseline = await library.search("матеріал", { mode: "lexical", rerank: false });
+    const result = await library.search("матеріал", { mode: "lexical" });
+    expect(result.results.map((chunk) => chunk.id)).toEqual(
+      baseline.results.map((chunk) => chunk.id),
+    );
+    expect(result.results.map((chunk) => chunk.score)).toEqual([0.1, 0.1, 0]);
+    expect(result.results.map((chunk) => chunk.retrievalRank)).toEqual([1, 2, 3]);
+  });
 
   it("keeps retrieval order, scores and limit when reranking fails without leaking its error", async () => {
     await books(12);
@@ -132,6 +183,20 @@ describe("search reranking", () => {
     expect(result.warnings).toEqual(["Reranking unavailable; returning retrieval results."]);
     expect(JSON.stringify(result)).not.toContain("secret-key");
     expect(model.rerank.mock.calls[0]![1]).toHaveLength(12);
+  });
+
+  it("falls back when an injected provider returns a sparse score array", async () => {
+    await books(2);
+    const model = reranker();
+    const scores: Awaited<ReturnType<RerankProvider["rerank"]>> = [];
+    scores.length = 2;
+    model.rerank.mockResolvedValue(scores);
+    const library = open({ reranker: model });
+    await library.index();
+    const baseline = await library.search("матеріал", { mode: "lexical", rerank: false });
+    const result = await library.search("матеріал", { mode: "lexical" });
+    expect(result.results).toEqual(baseline.results);
+    expect(result.warnings).toEqual(["Reranking unavailable; returning retrieval results."]);
   });
 
   it("skips the provider when disabled or when there are no candidates", async () => {
@@ -151,6 +216,12 @@ describe("search reranking", () => {
     await expect(library.search("матеріал", { rerank: true })).rejects.toThrow(
       "Configure a reranker",
     );
+    await expect(library.search("матеріал", { rerankStrategy: "score" })).rejects.toThrow(
+      "Configure a reranker",
+    );
+    await expect(
+      library.search("матеріал", { rerankStrategy: "blend", rerank: false }),
+    ).rejects.toThrow("cannot be combined");
   });
 
   it("uses the configured HTTP model without reindexing and raises the pool to the result limit", async () => {
