@@ -16,25 +16,9 @@ export interface IndexedSource {
   parsed?: ParsedDocument;
 }
 
-export interface VectorJob {
-  id: number;
-  operation: "upsert" | "delete";
-  chunkId: string;
-  profileId: string;
-  inputHash: string;
-  attempts: number;
-  lastError: string | null;
-}
-
-export interface ContentRepository {
-  getChunk(id: string): StoredChunk | null;
-  listChunks(bookId?: string): StoredChunk[];
-  close(): void;
-}
-
 type Row = Record<string, string | number | bigint | Uint8Array | null>;
 
-export class SqliteContentRepository implements ContentRepository {
+export class SqliteContentRepository {
   private readonly db: DatabaseSync;
 
   constructor(path: string) {
@@ -45,14 +29,17 @@ export class SqliteContentRepository implements ContentRepository {
       this.transaction(() => {
         // Inspect under the same write lock as migration: another process may initialize first.
         const version = Number(this.db.prepare("PRAGMA user_version").get()!.user_version);
-        if (version > 2) {
-          throw new Error(`Content database schema ${version} is newer than supported version 2.`);
+        if (version > 3) {
+          throw new Error(`Content database schema ${version} is newer than supported version 3.`);
         }
-        if (version === 2) return;
-        if (version === 1) {
-          // Search indexes now live entirely in the derived search database.
+        if (version === 3) return;
+        if (version === 1)
+          throw new Error(
+            "Content schema v1 is no longer supported. Export or upgrade it before opening this version.",
+          );
+        if (version === 2) {
           this.db.exec(
-            "DROP TRIGGER IF EXISTS chunks_delete_fts; DROP TABLE IF EXISTS chunks_fts; PRAGMA user_version=2;",
+            "DROP TABLE vector_jobs; DELETE FROM indexing_runs WHERE id != (SELECT MAX(id) FROM indexing_runs); UPDATE indexing_runs SET id=1; PRAGMA user_version=3;",
           );
           return;
         }
@@ -83,18 +70,12 @@ export class SqliteContentRepository implements ContentRepository {
         );
         CREATE INDEX chunks_document ON chunks(document_id, ordinal);
         CREATE INDEX sections_document ON sections(document_id, start_offset);
-        CREATE TABLE vector_jobs (
-          id INTEGER PRIMARY KEY, operation TEXT NOT NULL CHECK(operation IN ('upsert','delete')),
-          chunk_id TEXT NOT NULL, profile_id TEXT NOT NULL, input_hash TEXT NOT NULL,
-          attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
-          UNIQUE(operation, chunk_id, profile_id)
-        );
         CREATE TABLE indexing_runs (
           id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
           status TEXT NOT NULL, details TEXT
         );
         CREATE TABLE writer_lock (id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL);
-        PRAGMA user_version=2;
+        PRAGMA user_version=3;
       `);
       });
     } catch (error) {
@@ -136,11 +117,6 @@ export class SqliteContentRepository implements ContentRepository {
       this.db
         .prepare("INSERT OR REPLACE INTO writer_lock VALUES (1,?,?,?)")
         .run(token, process.pid, hostname());
-      this.db
-        .prepare(
-          "UPDATE indexing_runs SET status='interrupted', finished_at=? WHERE status='running'",
-        )
-        .run(new Date().toISOString());
     });
     return () => {
       this.db.prepare("DELETE FROM writer_lock WHERE token=?").run(token);
@@ -148,11 +124,10 @@ export class SqliteContentRepository implements ContentRepository {
   }
 
   startRun(): number {
-    return Number(
-      this.db
-        .prepare("INSERT INTO indexing_runs(started_at,status) VALUES (?,'running')")
-        .run(new Date().toISOString()).lastInsertRowid,
-    );
+    this.db
+      .prepare("INSERT OR REPLACE INTO indexing_runs(id,started_at,status) VALUES (1,?,'running')")
+      .run(new Date().toISOString());
+    return 1;
   }
 
   finishRun(id: number, status: "completed" | "partial" | "failed", details: unknown): void {
@@ -171,7 +146,6 @@ export class SqliteContentRepository implements ContentRepository {
   applySnapshot(
     books: DiscoveredBook[],
     sources: IndexedSource[],
-    profileId?: string,
   ): { updated: number; unchanged: number; removed: number } {
     return this.transaction(() => {
       const result = { updated: 0, unchanged: 0, removed: 0 };
@@ -255,13 +229,6 @@ export class SqliteContentRepository implements ContentRepository {
             chunk.endLine,
             chunk.estimatedTokens,
           );
-          // A retained chunk will be reconciled by its input hash; do not delete its reusable vector.
-          this.db
-            .prepare("DELETE FROM vector_jobs WHERE operation='delete' AND chunk_id=?")
-            .run(chunk.id);
-          // '*' upserts deliver the searchable text/payload, even without a model.
-          this.enqueueEmbedding(chunk, "*");
-          if (profileId) this.enqueueEmbedding(chunk, profileId);
         }
         result.updated++;
       }
@@ -270,54 +237,7 @@ export class SqliteContentRepository implements ContentRepository {
   }
 
   private removeDocument(id: string): void {
-    for (const row of this.db.prepare("SELECT id FROM chunks WHERE document_id=?").all(id)) {
-      this.db
-        .prepare("DELETE FROM vector_jobs WHERE operation='upsert' AND chunk_id=?")
-        .run(row.id);
-      this.db
-        .prepare(
-          "INSERT OR IGNORE INTO vector_jobs(operation,chunk_id,profile_id,input_hash) VALUES ('delete',?,'*','')",
-        )
-        .run(row.id);
-    }
     this.db.prepare("DELETE FROM documents WHERE id=?").run(id);
-  }
-
-  enqueueEmbedding(chunk: Pick<StoredChunk, "id" | "inputHash">, profileId: string): void {
-    this.db
-      .prepare(`INSERT INTO vector_jobs(operation,chunk_id,profile_id,input_hash) VALUES ('upsert',?,?,?)
-      ON CONFLICT(operation,chunk_id,profile_id) DO UPDATE SET input_hash=excluded.input_hash,
-      attempts=CASE WHEN vector_jobs.input_hash=excluded.input_hash THEN vector_jobs.attempts ELSE 0 END,
-      last_error=CASE WHEN vector_jobs.input_hash=excluded.input_hash THEN vector_jobs.last_error ELSE NULL END`)
-      .run(chunk.id, profileId, chunk.inputHash);
-  }
-
-  jobs(profileId?: string): VectorJob[] {
-    const rows = profileId
-      ? this.db
-          .prepare(
-            "SELECT * FROM vector_jobs WHERE operation='delete' OR profile_id=? ORDER BY operation, id",
-          )
-          .all(profileId)
-      : this.db.prepare("SELECT * FROM vector_jobs ORDER BY operation,id").all();
-    return rows.map((row) => ({
-      id: Number(row.id),
-      operation: row.operation as VectorJob["operation"],
-      chunkId: String(row.chunk_id),
-      profileId: String(row.profile_id),
-      inputHash: String(row.input_hash),
-      attempts: Number(row.attempts),
-      lastError: row.last_error == null ? null : String(row.last_error),
-    }));
-  }
-
-  completeJob(id: number): void {
-    this.db.prepare("DELETE FROM vector_jobs WHERE id=?").run(id);
-  }
-  failJob(id: number, error: string): void {
-    this.db
-      .prepare("UPDATE vector_jobs SET attempts=attempts+1,last_error=? WHERE id=?")
-      .run(error, id);
   }
 
   private chunkFromRow(row: Row): StoredChunk {
@@ -384,11 +304,6 @@ export class SqliteContentRepository implements ContentRepository {
       documents: count("documents"),
       sections: count("sections"),
       chunks: count("chunks"),
-      pendingVectorJobs: count("vector_jobs"),
-      failedVectorJobs: Number(
-        this.db.prepare("SELECT COUNT(*) AS n FROM vector_jobs WHERE last_error IS NOT NULL").get()!
-          .n,
-      ),
       lastRun:
         this.db.prepare("SELECT * FROM indexing_runs ORDER BY id DESC LIMIT 1").get() ?? null,
     };

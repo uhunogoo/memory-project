@@ -2,8 +2,14 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { DiscoveredBook, DiscoveryResult } from "../types.js";
-import { bookManifestSchema } from "./schemas.js";
-import type { BookManifest } from "./schemas.js";
+import { z } from "zod";
+const bookManifestSchema = z.strictObject({
+  title: z.string().optional(),
+  author: z.string().optional(),
+  language: z.string().optional(),
+  files: z.array(z.string()).optional(),
+});
+type BookManifest = z.infer<typeof bookManifestSchema>;
 
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "variant" });
 

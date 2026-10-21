@@ -1,12 +1,11 @@
 export { BookLibrary, initializeLibrary } from "./library.js";
-export type { IndexReport, SearchResponse } from "./library.js";
+export type { IndexReport, IndexOptions } from "./library.js";
 export { loadConfig } from "./config.js";
-export { discoverBooks } from "./ingestion/books.js";
-export { parseMarkdown, CHUNKER_VERSION } from "./ingestion/markdown.js";
-export { createEmbeddingProvider } from "./providers/index.js";
-export { SqliteContentRepository } from "./storage/content.js";
-export type { ContentRepository } from "./storage/content.js";
-export { SqliteSearchRepository, SqliteVectorRepository } from "./storage/vectors.js";
-export type { VectorRepository } from "./storage/vectors.js";
-export type { SearchRepository, SearchRequest, IndexedChunk } from "./storage/search.js";
-export type * from "./types.js";
+export type { SearchOptions, SearchResponse, SearchMode } from "./storage/search.js";
+export type {
+  AppConfig,
+  ChunkOptions,
+  EmbeddingConfig,
+  StoredChunk,
+  SearchResult,
+} from "./types.js";

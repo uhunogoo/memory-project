@@ -4,16 +4,22 @@ import { join } from "node:path";
 import { discoverBooks } from "./ingestion/books.js";
 import { CHUNKER_VERSION, parseMarkdown } from "./ingestion/markdown.js";
 import { createEmbeddingProvider } from "./providers/index.js";
-import { appConfigSchema } from "./schemas/config.js";
-import { indexOptionsSchema } from "./schemas/library.js";
-import { searchInputSchema } from "./schemas/search.js";
-import type { SearchOptions } from "./schemas/search.js";
+import { appConfigSchema } from "./config.js";
+import { z } from "zod";
+import { searchInputSchema } from "./storage/search.js";
+import type { SearchOptions } from "./storage/search.js";
 import { SqliteContentRepository } from "./storage/content.js";
 import type { IndexedSource } from "./storage/content.js";
-import { SqliteSearchRepository } from "./storage/vectors.js";
-import type { SearchRepository, SearchResponse } from "./storage/search.js";
-export type { SearchResponse } from "./storage/search.js";
-import type { AppConfig, EmbeddingProvider, IndexOptions } from "./types.js";
+import { SqliteSearchRepository } from "./storage/search.js";
+import type { SearchResponse } from "./storage/search.js";
+import type { AppConfig, EmbeddingProvider, StoredChunk } from "./types.js";
+
+// Only the public call's structure; the default embedding behavior stays in index().
+const indexOptionsSchema = z.object({
+  embed: z.boolean().optional(),
+});
+
+export type IndexOptions = z.infer<typeof indexOptionsSchema>;
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -36,27 +42,25 @@ export interface IndexReport {
   warnings: string[];
 }
 
-/** Orchestrates independent stores. Source changes and vector jobs commit together in content.sqlite. */
+/** Orchestrates independent stores. Missing search records are derived from the saved content snapshot. */
 export class BookLibrary {
   readonly config: AppConfig;
   private contentRepository?: SqliteContentRepository;
-  private searchRepository?: SearchRepository;
+  private searchRepository?: SqliteSearchRepository;
   private readonly provider?: EmbeddingProvider;
 
   constructor(
     config: AppConfig,
     dependencies: {
       provider?: EmbeddingProvider;
-      search?: SearchRepository;
-      /** @deprecated Use search. */
-      vectors?: SearchRepository;
+      search?: SqliteSearchRepository;
     } = {},
   ) {
     this.config = parseLibraryConfig(config);
     this.provider =
       dependencies.provider ??
       (this.config.embedding ? createEmbeddingProvider(this.config.embedding) : undefined);
-    this.searchRepository = dependencies.search ?? dependencies.vectors;
+    this.searchRepository = dependencies.search;
   }
 
   get content(): SqliteContentRepository {
@@ -66,7 +70,7 @@ export class BookLibrary {
     return this.contentRepository;
   }
 
-  private searchStore(): SearchRepository {
+  private searchStore(): SqliteSearchRepository {
     // Keep the existing filename so schema migration can reuse stored embeddings.
     this.searchRepository ??= new SqliteSearchRepository(
       join(this.config.dataDir, "vectors.sqlite"),
@@ -115,7 +119,7 @@ export class BookLibrary {
           });
         }
       }
-      const result = this.content.applySnapshot(discovery.books, sources, this.provider?.profileId);
+      const result = this.content.applySnapshot(discovery.books, sources);
       const report: IndexReport = {
         books: discovery.books.length,
         ...result,
@@ -169,36 +173,18 @@ export class BookLibrary {
   ): Promise<Pick<IndexReport, "embedded" | "reused" | "failed" | "warnings">> {
     const report = { embedded: 0, reused: 0, failed: 0, warnings: [] as string[] };
     const chunks = this.content.listChunks();
-    const current = new Map(chunks.map((chunk) => [chunk.id, chunk]));
-    // Payload delivery is retryable independently of embedding generation.
-    // The full snapshot also restores a lost/migrated search DB on index/embed.
-    for (const chunk of chunks) this.content.enqueueEmbedding(chunk, "*");
-    let vectors: SearchRepository;
+    let store: SqliteSearchRepository;
     try {
-      vectors = this.searchStore();
-      await vectors.upsertChunks(chunks);
-      for (const job of this.content.jobs()) {
-        if (job.operation === "upsert" && job.profileId === "*") this.content.completeJob(job.id);
-      }
+      store = this.searchStore();
+      store.upsertChunks(chunks);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Search storage unavailable";
-      for (const job of this.content.jobs()) {
-        if (job.operation === "upsert" && job.profileId === "*")
-          this.content.failJob(job.id, message);
-      }
-      if (this.provider)
-        for (const chunk of chunks) this.content.enqueueEmbedding(chunk, this.provider.profileId);
-      report.warnings.push(`Search index update failed; content is saved. ${message}`);
+      report.warnings.push(
+        `Search index update failed; content is saved. ${error instanceof Error ? error.message : "Search storage unavailable"}`,
+      );
       report.failed = Math.max(1, chunks.length);
       return report;
     }
-    // Keep old rows until cache reuse: a rename or formatting-only edit may preserve model input.
     try {
-      for (const job of this.content.jobs()) {
-        if (job.operation === "upsert" && current.get(job.chunkId)?.inputHash !== job.inputHash) {
-          this.content.completeJob(job.id);
-        }
-      }
       const provider = this.provider;
       if (!provider) {
         if (chunks.length)
@@ -207,113 +193,59 @@ export class BookLibrary {
           );
         return report;
       }
+      // Group the entire snapshot by model input, so each input is checked/generated once.
+      const missing = new Map<string, StoredChunk[]>();
       for (const chunk of chunks) {
-        if (!(await vectors.get(provider.profileId, chunk.id, chunk.inputHash)))
-          this.content.enqueueEmbedding(chunk, provider.profileId);
+        if (store.get(provider.profileId, chunk.id, chunk.inputHash)) continue;
+        const group = missing.get(chunk.inputHash) ?? [];
+        group.push(chunk);
+        missing.set(chunk.inputHash, group);
       }
-      // Reconcile cached vectors even with --no-embed: this performs no inference or HTTP calls.
-      for (const job of this.content.jobs(provider.profileId)) {
-        if (job.operation !== "upsert") continue;
-        const cached =
-          (await vectors.get(provider.profileId, job.chunkId, job.inputHash)) ??
-          (await vectors.findCached(provider.profileId, job.inputHash));
+      // Move every reusable input before HTTP can fail and obsolete IDs are removed.
+      for (const [hash, group] of missing) {
+        const cached = store.findCached(provider.profileId, hash);
         if (!cached) continue;
-        await vectors.upsert(provider.profileId, current.get(job.chunkId)!, cached);
-        this.content.completeJob(job.id);
-        report.reused++;
-      }
-      if (!generate) {
-        if (this.content.jobs(provider.profileId).length)
-          report.warnings.push("Embedding jobs queued. Run embed to complete the semantic index.");
-        return report;
-      }
-      const jobs = this.content
-        .jobs(provider.profileId)
-        .filter((job) => job.operation === "upsert");
-      const batchSize = provider.config.batchSize;
-      for (let offset = 0; offset < jobs.length; offset += batchSize) {
-        const pending = jobs
-          .slice(offset, offset + batchSize)
-          .filter((job) => current.get(job.chunkId)?.inputHash === job.inputHash);
-        const uncached = [];
-        for (const job of pending) {
-          const vector =
-            (await vectors.get(provider.profileId, job.chunkId, job.inputHash)) ??
-            (await vectors.findCached(provider.profileId, job.inputHash));
-          if (!vector) {
-            uncached.push(job);
-            continue;
-          }
-          await vectors.upsert(provider.profileId, current.get(job.chunkId)!, vector);
-          this.content.completeJob(job.id);
+        for (const chunk of group) {
+          store.upsert(provider.profileId, chunk, cached);
           report.reused++;
         }
-        if (!uncached.length) continue;
+        missing.delete(hash);
+      }
+      if (!generate) {
+        if (missing.size)
+          report.warnings.push("Embeddings are missing. Run embed to complete the semantic index.");
+        return report;
+      }
+      const groups = [...missing.values()];
+      for (let offset = 0; offset < groups.length; offset += provider.config.batchSize) {
+        const batch = groups.slice(offset, offset + provider.config.batchSize);
+        let completed = 0;
         try {
-          // Deduplicate identical model inputs within a batch as well as across runs.
-          const inputs = [
-            ...new Map(
-              uncached.map((job) => [job.inputHash, current.get(job.chunkId)!.embeddingText]),
-            ).entries(),
-          ];
           const embeddings = await provider.embed(
-            inputs.map(([, text]) => text),
+            batch.map((group) => group[0]!.embeddingText),
             "document",
           );
-          if (embeddings.length !== inputs.length || !embeddings[0]?.length)
+          if (embeddings.length !== batch.length || !embeddings[0]?.length)
             throw new Error("Provider returned an invalid embedding batch.");
-          const {
-            provider: name,
-            baseUrl,
-            model,
-            dimensions,
-            documentPrefix,
-            queryPrefix,
-          } = provider.config;
-          await vectors.ensureProfile(provider.profileId, embeddings[0]!.length, {
-            provider: name,
-            baseUrl,
-            model,
-            dimensions,
-            documentPrefix,
-            queryPrefix,
-          });
-          const byHash = new Map(inputs.map(([inputHash], i) => [inputHash, embeddings[i]!]));
-          for (const job of uncached) {
-            await vectors.upsert(
-              provider.profileId,
-              current.get(job.chunkId)!,
-              byHash.get(job.inputHash)!,
-            );
-            this.content.completeJob(job.id);
-            report.embedded++;
+          store.ensureProfile(provider.profileId, embeddings[0]!.length);
+          for (const [i, group] of batch.entries()) {
+            for (const chunk of group) {
+              store.upsert(provider.profileId, chunk, embeddings[i]!);
+              completed++;
+              report.embedded++;
+            }
           }
         } catch (error) {
-          const message = error instanceof Error ? error.message : "Embedding request failed";
-          const outstanding = new Set(this.content.jobs(provider.profileId).map((job) => job.id));
-          const failed = uncached.filter((job) => outstanding.has(job.id));
-          for (const job of failed) this.content.failJob(job.id, message);
-          report.failed += failed.length;
-          report.warnings.push(message);
-          // Stop this run on provider failure; remaining jobs persist for a later retry.
+          report.failed = batch.reduce((sum, group) => sum + group.length, 0) - completed;
+          report.warnings.push(error instanceof Error ? error.message : "Embedding update failed");
           break;
         }
       }
       return report;
     } finally {
-      // Delete only after retained inputs have moved to their new chunk IDs.
-      const obsolete = new Set([
-        ...(await vectors.listChunkIds()),
-        ...(await vectors.listEntries()).map((entry) => entry.chunkId),
-      ]);
-      for (const chunkId of obsolete) {
-        if (!current.has(chunkId)) await vectors.removeChunk(chunkId);
-      }
-      for (const job of this.content.jobs()) {
-        if (job.operation !== "delete") continue;
-        if (!current.has(job.chunkId)) await vectors.removeChunk(job.chunkId);
-        this.content.completeJob(job.id);
-      }
+      // Reuse old inputs before deleting obsolete IDs (including renamed files).
+      const current = new Set(chunks.map((chunk) => chunk.id));
+      for (const id of store.listChunkIds()) if (!current.has(id)) store.removeChunk(id);
     }
   }
 
@@ -366,32 +298,34 @@ export class BookLibrary {
       profileId: this.provider?.profileId,
       vector,
     };
-    let response: SearchResponse;
-    try {
-      response = await store.search(request);
-    } catch (error) {
-      if (effectiveMode !== "hybrid") throw error;
-      warnings.push(
-        `Semantic search unavailable; returning lexical results. ${error instanceof Error ? error.message : ""}`,
-      );
-      response = await store.search({ ...request, mode: "lexical", vector: undefined });
-    }
+    const response = store.search(request);
     return { ...response, mode, warnings: [...warnings, ...response.warnings] };
   }
 
-  async status() {
+  status() {
     let vectorStatus: {
       count: number;
       profiles: { id: string; dimensions: number }[];
       error?: string;
+      pendingEmbeddings: number | null;
     };
     try {
       const vectors = this.searchStore();
-      vectorStatus = { count: await vectors.count(), profiles: await vectors.listProfiles() };
+      vectorStatus = {
+        count: vectors.count(),
+        profiles: vectors.listProfiles(),
+        pendingEmbeddings: this.provider
+          ? this.content
+              .listChunks()
+              .filter((chunk) => !vectors.get(this.provider!.profileId, chunk.id, chunk.inputHash))
+              .length
+          : null,
+      };
     } catch (error) {
       vectorStatus = {
         count: 0,
         profiles: [],
+        pendingEmbeddings: null,
         error: error instanceof Error ? error.message : "Vector storage unavailable",
       };
     }
@@ -402,9 +336,9 @@ export class BookLibrary {
     };
   }
 
-  async close(): Promise<void> {
+  close(): void {
     try {
-      await this.searchRepository?.close();
+      this.searchRepository?.close();
     } finally {
       this.contentRepository?.close();
     }
@@ -412,14 +346,13 @@ export class BookLibrary {
 }
 
 export async function initializeLibrary(config: AppConfig): Promise<void> {
-  config = parseLibraryConfig(config);
-  await mkdir(config.booksDir, { recursive: true });
-  await mkdir(config.dataDir, { recursive: true });
   const library = new BookLibrary(config);
+  await mkdir(library.config.booksDir, { recursive: true });
+  await mkdir(library.config.dataDir, { recursive: true });
   try {
-    const status = await library.status();
+    const status = library.status();
     if (status.vectors.error) throw new Error(status.vectors.error);
   } finally {
-    await library.close();
+    library.close();
   }
 }

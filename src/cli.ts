@@ -9,7 +9,7 @@ Usage: vp run memory <command> [arguments] [options]
 
   init                         Create books/ and initialize both databases
   index [--no-embed]            Scan all books and synchronize the index
-  embed                        Resume missing/failed embeddings without rescanning
+  embed                        Generate missing embeddings without rescanning
   status                       Show counts, active profile and last indexing run
   books                        List indexed books and their IDs
   sections [--book ID]          List sections and source positions
@@ -24,7 +24,7 @@ Options:
   --limit N                    Maximum results, 1–100 (default: 10)
   --book ID                    Restrict to a book ID from the books command
   --json                       Machine-readable JSON output
-  --no-embed                   Update text and queue embeddings for later
+  --no-embed                   Update text without requesting embeddings
   --help                       Show help
 
 Without an embedding configuration, indexing and lexical search work offline.
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
         break;
       }
       case "status":
-        result = await library.status();
+        result = library.status();
         break;
       case "books":
         result = library.content.listBooks();
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     }
     console.log(JSON.stringify(result, null, 2));
   } finally {
-    await library.close();
+    library.close();
   }
 }
 

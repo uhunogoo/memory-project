@@ -25,55 +25,7 @@ function json(value: unknown, status = 200): Response {
 }
 
 describe("embedding providers", () => {
-  it.each([
-    null,
-    [],
-    {},
-    config({ provider: "private-secret" as EmbeddingConfig["provider"] }),
-    { ...config(), baseUrl: 123 },
-    { ...config(), model: ["private-secret"] },
-    { ...config(), batchSize: "2" },
-    { ...config(), batchSize: 1.5 },
-    { ...config(), timeoutMs: null },
-    { ...config(), retries: Number.NaN },
-    { ...config(), dimensions: "2" },
-    { ...config(), documentPrefix: null },
-    { ...config(), queryPrefix: [] },
-    { ...config(), apiKey: { value: "private-secret" } },
-  ])("rejects malformed public provider configuration before HTTP %#", (value) => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const create = () => createEmbeddingProvider(value as EmbeddingConfig, { fetch });
-    expect(create).toThrow("Invalid embedding configuration structure");
-    expect(create).not.toThrow("private-secret");
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [null, "query"],
-    ["private-secret", "query"],
-    [[1], "query"],
-    [[null], "query"],
-    [[{ text: "private-secret" }], "query"],
-    [Array<string>(1), "query"],
-    [["text"], ""],
-    [["text"], "private-secret"],
-    [["text"], null],
-  ])(
-    "validates public embedding input structure without coercion or HTTP %#",
-    async (texts, kind) => {
-      const fetch = vi.fn<typeof globalThis.fetch>();
-      const result = createEmbeddingProvider(config(), { fetch }).embed(
-        texts as string[],
-        kind as "document" | "query",
-      );
-      await expect(result).rejects.toThrow("Invalid embedding input structure");
-      await expect(result).rejects.not.toThrow("private-secret");
-      await expect(result).rejects.not.toHaveProperty("issues");
-      expect(fetch).not.toHaveBeenCalled();
-    },
-  );
-
-  it("keeps empty text rejection as a business rule after structural parsing", async () => {
+  it("rejects empty embedding text before HTTP", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     await expect(
       createEmbeddingProvider(config(), { fetch }).embed([" \n"], "query"),
@@ -81,30 +33,26 @@ describe("embedding providers", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("batches Ollama inputs without truncation and preserves source text with its prefix", async () => {
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(
-        json({
-          embeddings: [
-            [1, 0],
-            [0, 1],
-          ],
-        }),
-      )
-      .mockResolvedValueOnce(json({ embeddings: [[1, 1]] }));
+  it("sends one Ollama batch without truncation and preserves the source and prefix", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      json({
+        embeddings: [
+          [1, 0],
+          [0, 1],
+        ],
+      }),
+    );
     const provider = createEmbeddingProvider(
       config({ documentPrefix: "passage: ", dimensions: 2 }),
       { fetch },
     );
-    const source = [" Українська книга\n", "Розділ другий", "Третій"];
-    await expect(provider.embed(source, "document")).resolves.toEqual([
+    const source = [" Українська книга\n", "Розділ другий"];
+    expect(await provider.embed(source, "document")).toEqual([
       [1, 0],
       [0, 1],
-      [1, 1],
     ]);
     expect(source[0]).toBe(" Українська книга\n");
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0]?.[0]).toBe("http://127.0.0.1:11434/api/embed");
     expect(JSON.parse(fetch.mock.calls[0]?.[1]?.body as string)).toEqual({
       model: "test-embedding",
@@ -112,7 +60,6 @@ describe("embedding providers", () => {
       dimensions: 2,
       truncate: false,
     });
-    expect(JSON.parse(fetch.mock.calls[1]?.[1]?.body as string).input).toEqual(["passage: Третій"]);
   });
 
   it("orders OpenAI-compatible vectors by indexes and sends query prefix plus authentication", async () => {
@@ -292,12 +239,16 @@ describe("embedding providers", () => {
     ).rejects.toThrow("indexes");
   });
 
-  it("detects changed dimensions across batches and later calls", async () => {
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(json({ embeddings: [[1, 2]] }))
-      .mockResolvedValueOnce(json({ embeddings: [[1, 2, 3]] }));
-    const provider = createEmbeddingProvider(config({ batchSize: 1 }), { fetch });
+  it("detects inconsistent dimensions within a response and across calls", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(
+      json({
+        embeddings: [
+          [1, 2],
+          [1, 2, 3],
+        ],
+      }),
+    );
+    const provider = createEmbeddingProvider(config(), { fetch });
     await expect(provider.embed(["one", "two"], "document")).rejects.toThrow("dimensions");
     const nextFetch = vi
       .fn<typeof globalThis.fetch>()

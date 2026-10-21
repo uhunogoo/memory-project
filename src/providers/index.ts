@@ -1,16 +1,26 @@
+import { z } from "zod";
 import { createHash } from "node:crypto";
-
 import { normalizeBaseUrl, validateEmbeddingConfigValues } from "../config.js";
-import { embeddingConfigSchema } from "../schemas/config.js";
-import type { EmbeddingConfig, EmbeddingInputKind, EmbeddingProvider } from "../types.js";
+import type { EmbeddingConfig, EmbeddingProvider, EmbeddingInputKind } from "../types.js";
 
-import {
-  embeddingInputSchema,
-  ollamaEmbeddingResponseSchema,
-  openAiEmbeddingResponseSchema,
-} from "./schemas.js";
+// These describe the HTTP payload only. Unknown provider metadata is accepted
+// and omitted from the parsed result; vector semantics are checked by the adapter.
+const vectorSchema = z.array(z.number());
 
-export interface ProviderOptions {
+const ollamaEmbeddingResponseSchema = z.object({
+  embeddings: z.array(vectorSchema),
+});
+
+const openAiEmbeddingResponseSchema = z.object({
+  data: z.array(
+    z.object({
+      index: z.number().int(),
+      embedding: vectorSchema,
+    }),
+  ),
+});
+
+interface ProviderOptions {
   /** Dependency injection for tests or custom HTTP transports. */
   fetch?: typeof globalThis.fetch;
 }
@@ -128,11 +138,6 @@ class HttpEmbeddingProvider implements EmbeddingProvider {
   private observedDimensions: number | undefined;
 
   constructor(config: EmbeddingConfig, options: ProviderOptions) {
-    const validation = embeddingConfigSchema.safeParse(config);
-    if (!validation.success) {
-      throw new Error("Invalid embedding configuration structure. Check field types and provider.");
-    }
-    config = validation.data;
     validateEmbeddingConfigValues(config);
     this.config = Object.freeze({ ...config, baseUrl: normalizeBaseUrl(config.baseUrl) });
     this.url = endpoint(this.config);
@@ -154,13 +159,6 @@ class HttpEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embed(texts: string[], kind: EmbeddingInputKind): Promise<number[][]> {
-    const validation = embeddingInputSchema.safeParse({ texts, kind });
-    if (!validation.success) {
-      throw new Error(
-        "Invalid embedding input structure: expected strings and a document/query kind.",
-      );
-    }
-    ({ texts, kind } = validation.data);
     if (texts.some((value) => !value.trim())) {
       throw new Error("Embedding inputs must be non-empty strings.");
     }
@@ -169,14 +167,11 @@ class HttpEmbeddingProvider implements EmbeddingProvider {
     const input = texts.map((value) => prefix + value);
     const output: number[][] = [];
     let dimensions = this.observedDimensions;
-    for (let start = 0; start < input.length; start += this.config.batchSize) {
-      const batch = input.slice(start, start + this.config.batchSize);
-      const body = await this.request(batch);
-      for (const value of extractVectors(body, this.config.provider, batch.length)) {
-        const vector = validateVector(value, dimensions);
-        dimensions ??= vector.length;
-        output.push(vector);
-      }
+    const body = await this.request(input);
+    for (const value of extractVectors(body, this.config.provider, input.length)) {
+      const vector = validateVector(value, dimensions);
+      dimensions ??= vector.length;
+      output.push(vector);
     }
     // Retain dimensions across calls to catch a model changing behind the same endpoint.
     if (this.observedDimensions !== undefined && dimensions !== this.observedDimensions) {

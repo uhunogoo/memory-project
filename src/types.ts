@@ -1,9 +1,8 @@
-import type { EmbeddingConfig } from "./schemas/config.js";
-import type { EmbeddingInputKind } from "./providers/schemas.js";
+import type { EmbeddingConfig } from "./config.js";
 
-export type { AppConfig, ChunkOptions, EmbeddingConfig } from "./schemas/config.js";
-export type { IndexOptions } from "./schemas/library.js";
-export type { EmbeddingInputKind } from "./providers/schemas.js";
+export type { AppConfig, ChunkOptions, EmbeddingConfig } from "./config.js";
+export type { IndexOptions } from "./library.js";
+export type EmbeddingInputKind = "document" | "query";
 
 export interface SourceFile {
   relativePath: string;

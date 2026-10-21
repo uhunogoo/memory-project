@@ -7,7 +7,8 @@ import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { parse as parseYaml } from "yaml";
 import type { ChunkOptions, ParsedChunk, ParsedDocument, ParsedSection } from "../types.js";
-import { frontmatterSchema, parseMarkdownInputSchema } from "./schemas.js";
+import { z } from "zod";
+const frontmatterSchema = z.object({ title: z.string().optional() });
 
 // Revalidate previously indexed frontmatter once under the external metadata contract.
 export const CHUNKER_VERSION = "markdown-ast-v2";
@@ -28,7 +29,7 @@ function hash(...parts: string[]): string {
 }
 
 /** A byte-based sizing heuristic, never an exact count for a provider's tokenizer. */
-export function estimateTokens(text: string): number {
+function estimateTokens(text: string): number {
   return Math.ceil(Buffer.byteLength(text, "utf8") / 3);
 }
 
@@ -234,19 +235,11 @@ function documentTitle(tree: AstNode, bookTitle: string): string {
 }
 
 export function parseMarkdown(
-  documentIdInput: string,
-  markdownInput: string,
-  bookTitleInput: string,
-  optionsInput: ChunkOptions,
+  documentId: string,
+  markdown: string,
+  bookTitle: string,
+  options: ChunkOptions,
 ): ParsedDocument {
-  const validation = parseMarkdownInputSchema.safeParse({
-    documentId: documentIdInput,
-    markdown: markdownInput,
-    bookTitle: bookTitleInput,
-    options: optionsInput,
-  });
-  if (!validation.success) throw new Error("Invalid Markdown parser input structure.");
-  const { documentId, markdown, bookTitle, options } = validation.data;
   if (options.targetTokens < 1) {
     throw new Error("targetTokens must be a positive integer.");
   }

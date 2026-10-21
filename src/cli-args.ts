@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { searchModeSchema } from "./schemas/search.js";
+import { searchModeSchema } from "./storage/search.js";
 
 const commandSchema = z.enum([
   "init",

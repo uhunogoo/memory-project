@@ -5,8 +5,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { BookLibrary, initializeLibrary } from "../src/library.js";
-import type { SearchRequest, SearchResponse } from "../src/storage/search.js";
-import { SqliteVectorRepository } from "../src/storage/vectors.js";
+import { SqliteSearchRepository } from "../src/storage/search.js";
 import type { AppConfig, EmbeddingProvider, IndexOptions, StoredChunk } from "../src/types.js";
 
 let directory: string;
@@ -42,7 +41,7 @@ function openLibrary(dependencies: ConstructorParameters<typeof BookLibrary>[1] 
 }
 
 async function closeLibrary(library: BookLibrary): Promise<void> {
-  await library.close();
+  library.close();
   openLibraries.delete(library);
 }
 
@@ -64,7 +63,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  for (const library of openLibraries) await library.close();
+  for (const library of openLibraries) library.close();
   openLibraries.clear();
   await rm(directory, { recursive: true, force: true });
 });
@@ -196,7 +195,7 @@ describe("book library integration", () => {
     "rejects malformed search input before reading stores or embedding %#",
     async (query, options, message) => {
       const provider = fakeProvider();
-      const store = new SqliteVectorRepository(":memory:");
+      const store = new SqliteSearchRepository(":memory:");
       const library = openLibrary({ provider, search: store });
       const searchStore = vi.spyOn(store, "search");
       const chunks = vi.spyOn(library.content, "listChunks");
@@ -229,7 +228,7 @@ describe("book library integration", () => {
   );
 
   it("keeps search defaults and ignores unknown options from JavaScript clients", async () => {
-    const store = new SqliteVectorRepository(":memory:");
+    const store = new SqliteSearchRepository(":memory:");
     const library = openLibrary({ search: store });
     const searchStore = vi.spyOn(store, "search");
     expect(await library.search("query")).toMatchObject({ mode: "hybrid", results: [] });
@@ -258,8 +257,8 @@ describe("book library integration", () => {
 
     const report = await library.index();
     expect(report).toMatchObject({ books: 2, updated: 3, unchanged: 0, removed: 0, failed: 0 });
-    const status = await library.status();
-    expect(status).toMatchObject({ books: 2, documents: 3, pendingVectorJobs: 0 });
+    const status = library.status();
+    expect(status).toMatchObject({ books: 2, documents: 3, vectors: { pendingEmbeddings: 0 } });
     expect(status.chunks).toBeGreaterThanOrEqual(3);
     expect(status.vectors.count).toBe(status.chunks);
     expect(report.embedded).toBe(status.chunks);
@@ -301,6 +300,32 @@ describe("book library integration", () => {
     expect(library.content.listChunks()).toEqual(chunks);
   });
 
+  it("deduplicates identical inputs across the whole run before batching", async () => {
+    for (let i = 0; i < 5; i++) await bookFile("Book", `${i}.md`, "# Shared\n\nIdentical input.\n");
+    const provider = fakeProvider();
+    provider.config.batchSize = 2;
+    const library = openLibrary({ provider });
+    expect(await library.index()).toMatchObject({ embedded: 5, reused: 0, failed: 0 });
+    expect(provider.embed).toHaveBeenCalledTimes(1);
+    expect(provider.embed.mock.calls[0]![0]).toHaveLength(1);
+    expect(library.status().vectors).toMatchObject({ count: 5, pendingEmbeddings: 0 });
+  });
+
+  it("preserves cached renamed inputs even when generating another input fails", async () => {
+    const source = await bookFile("Book", "old.md", "# Saved\n\nReusable content.\n");
+    const provider = fakeProvider();
+    provider.config.batchSize = 1;
+    const library = openLibrary({ provider });
+    await library.index();
+    await rename(source, join(dirname(source), "z-renamed.md"));
+    await bookFile("Book", "a-new.md", "# New\n\nNeeds inference.\n");
+    provider.embed.mockRejectedValueOnce(new Error("offline"));
+    expect(await library.index()).toMatchObject({ reused: 1, failed: 1 });
+    expect(library.status().vectors).toMatchObject({ count: 1, pendingEmbeddings: 1 });
+    const results = await library.search("Saved", { mode: "vector" });
+    expect(results.results[0]?.relativePath).toBe("z-renamed.md");
+  });
+
   it("keeps lexical search current and excludes old vectors while updated text awaits embeddings", async () => {
     const path = await bookFile("Книга", "book.md", "# Розділ\n\nСтародрук описує давнє місто.\n");
     const provider = fakeProvider();
@@ -317,7 +342,7 @@ describe("book library integration", () => {
     const incomplete = await library.search("Новобудова", { mode: "vector" });
     expect(incomplete.results).toEqual([]);
     expect(incomplete.warnings.join(" ")).toMatch(/incomplete|No current embeddings/);
-    expect(library.content.jobs()).toHaveLength(library.content.listChunks().length);
+    expect(library.status().vectors.pendingEmbeddings).toBe(library.content.listChunks().length);
 
     const resumed = await library.embed();
     expect(resumed.failed).toBe(0);
@@ -325,10 +350,10 @@ describe("book library integration", () => {
     const results = (await library.search("Новобудова", { mode: "vector" })).results;
     expect(results).toHaveLength(1);
     expect(results.every(({ id }) => !oldIds.includes(id))).toBe(true);
-    expect((await library.status()).pendingVectorJobs).toBe(0);
+    expect(library.status().vectors.pendingEmbeddings).toBe(0);
   });
 
-  it("removes deleted files and books from text, vectors, and pending jobs", async () => {
+  it("removes deleted files and books from text and vectors", async () => {
     const removedFile = await bookFile("Книга", "01.md", "# Перший\n\nФрагмент першого розділу.\n");
     await bookFile("Книга", "02.md", "# Другий\n\nФрагмент другого розділу.\n");
     const library = openLibrary({ provider: fakeProvider() });
@@ -336,17 +361,20 @@ describe("book library integration", () => {
     await rm(removedFile);
 
     expect(await library.index()).toMatchObject({ removed: 1, unchanged: 1 });
-    expect(await library.status()).toMatchObject({ books: 1, documents: 1, pendingVectorJobs: 0 });
-    expect((await library.status()).vectors.count).toBe((await library.status()).chunks);
+    expect(library.status()).toMatchObject({
+      books: 1,
+      documents: 1,
+      vectors: { pendingEmbeddings: 0 },
+    });
+    expect(library.status().vectors.count).toBe(library.status().chunks);
     expect((await library.search("Перший", { mode: "lexical" })).results).toEqual([]);
     await rm(join(config.booksDir, "Книга"), { recursive: true });
     expect(await library.index()).toMatchObject({ removed: 1, books: 0 });
-    expect(await library.status()).toMatchObject({
+    expect(library.status()).toMatchObject({
       books: 0,
       documents: 0,
       chunks: 0,
-      pendingVectorJobs: 0,
-      vectors: { count: 0 },
+      vectors: { pendingEmbeddings: 0, count: 0 },
     });
   });
 
@@ -378,7 +406,7 @@ describe("book library integration", () => {
 
     expect(await library.embed()).toMatchObject({ embedded: 1, failed: 0 });
     expect(provider.embed.mock.calls[0]?.[0][0]).toContain("НоваНазва");
-    expect((await library.status()).pendingVectorJobs).toBe(0);
+    expect(library.status().vectors.pendingEmbeddings).toBe(0);
   });
 
   it("rebuilds a deleted vector database from persisted text without re-reading source files", async () => {
@@ -398,9 +426,8 @@ describe("book library integration", () => {
     expect(report).toMatchObject({ embedded: chunks.length, failed: 0 });
     expect(provider.embed).toHaveBeenCalled();
     expect(restored.content.listChunks()).toEqual(chunks);
-    expect(await restored.status()).toMatchObject({
-      pendingVectorJobs: 0,
-      vectors: { count: chunks.length },
+    expect(restored.status()).toMatchObject({
+      vectors: { pendingEmbeddings: 0, count: chunks.length },
     });
     expect((await restored.search("оригінал", { mode: "vector" })).results).not.toHaveLength(0);
   });
@@ -414,23 +441,20 @@ describe("book library integration", () => {
     const report = await initial.index();
     expect(report.failed).toBeGreaterThan(0);
     expect(report.warnings).toContain("Simulated provider unavailable");
-    expect(await initial.status()).toMatchObject({
-      failedVectorJobs: 1,
-      pendingVectorJobs: 1,
+    expect(initial.status()).toMatchObject({
+      vectors: { pendingEmbeddings: 1 },
       lastRun: { status: "partial" },
     });
-    expect(initial.content.jobs()[0]).toMatchObject({
-      attempts: 1,
-      lastError: "Simulated provider unavailable",
-    });
+    expect(JSON.parse(initial.status().lastRun!.details as string).warnings).toContain(
+      "Simulated provider unavailable",
+    );
     expect((await initial.search("Соняшник", { mode: "lexical" })).results).toHaveLength(1);
     await closeLibrary(initial);
 
     const resumed = openLibrary({ provider });
     expect(await resumed.embed()).toMatchObject({ embedded: 1, failed: 0 });
-    expect(await resumed.status()).toMatchObject({
-      failedVectorJobs: 0,
-      pendingVectorJobs: 0,
+    expect(resumed.status()).toMatchObject({
+      vectors: { pendingEmbeddings: 0 },
       lastRun: { status: "completed" },
     });
     expect((await resumed.search("Соняшник", { mode: "hybrid" })).results[0]?.matches).toEqual([
@@ -453,7 +477,7 @@ describe("book library integration", () => {
     expect(newProvider.embed).toHaveBeenCalledExactlyOnceWith(["змістом"], "query");
     expect(empty.warnings.join(" ")).toContain("profile");
     expect(await library.embed()).toMatchObject({ embedded: 1, failed: 0 });
-    expect((await library.status()).vectors.profiles).toEqual([
+    expect(library.status().vectors.profiles).toEqual([
       { id: "new-model", dimensions: 3 },
       { id: "old-model", dimensions: 2 },
     ]);
@@ -502,7 +526,7 @@ describe("book library integration", () => {
 
     await expect(library.index()).rejects.toThrow("invalid JSON");
     expect(library.content.listChunks()).toEqual(prior);
-    expect(await library.status()).toMatchObject({
+    expect(library.status()).toMatchObject({
       documents: 2,
       vectors: { count: prior.length },
       lastRun: { status: "failed" },
@@ -513,33 +537,28 @@ describe("book library integration", () => {
     expect(await library.index()).toMatchObject({ removed: 1, failed: 0 });
   });
 
-  it("replays the outbox after a vector commit succeeds but its acknowledgement is interrupted", async () => {
+  it("does not regenerate a committed vector after an interrupted write", async () => {
     await bookFile("Книга", "book.md", "# Відновлення\n\nСтійкий до переривань індекс.\n");
-    class InterruptedVectorRepository extends SqliteVectorRepository {
-      override async upsert(
-        profileId: string,
-        chunk: StoredChunk,
-        vector: number[],
-      ): Promise<void> {
-        await super.upsert(profileId, chunk, vector);
+    class InterruptedVectorRepository extends SqliteSearchRepository {
+      override upsert(profileId: string, chunk: StoredChunk, vector: number[]): void {
+        super.upsert(profileId, chunk, vector);
         throw new Error("Simulated interruption after durable vector write");
       }
     }
     const provider = fakeProvider();
     const vectors = new InterruptedVectorRepository(join(config.dataDir, "vectors.sqlite"));
-    const interrupted = openLibrary({ provider, vectors });
+    const interrupted = openLibrary({ provider, search: vectors });
 
     expect(await interrupted.index()).toMatchObject({ failed: 1 });
-    expect(await interrupted.status()).toMatchObject({
-      vectors: { count: 1 },
-      pendingVectorJobs: 1,
+    expect(interrupted.status()).toMatchObject({
+      vectors: { count: 1, pendingEmbeddings: 0 },
     });
     await closeLibrary(interrupted);
     provider.embed.mockClear();
     const recovered = openLibrary({ provider });
-    expect(await recovered.embed()).toMatchObject({ reused: 1, embedded: 0, failed: 0 });
+    expect(await recovered.embed()).toMatchObject({ reused: 0, embedded: 0, failed: 0 });
     expect(provider.embed).not.toHaveBeenCalled();
-    expect(await recovered.status()).toMatchObject({ vectors: { count: 1 }, pendingVectorJobs: 0 });
+    expect(recovered.status()).toMatchObject({ vectors: { count: 1, pendingEmbeddings: 0 } });
     expect((await recovered.search("індекс", { mode: "vector" })).results).toHaveLength(1);
   });
 
@@ -587,8 +606,8 @@ describe("book library integration", () => {
       startRun.mockRestore();
 
       expect(await library.index()).toMatchObject({ updated: 1, failed: 0 });
-      expect(await library.status()).toMatchObject({
-        pendingVectorJobs: 0,
+      expect(library.status()).toMatchObject({
+        vectors: { pendingEmbeddings: 0 },
         lastRun: { status: "completed" },
       });
     },
@@ -619,7 +638,7 @@ describe("book library integration", () => {
 
       expect(await library.embed()).toMatchObject({ embedded: 0, failed: 0 });
       expect(provider.embed).not.toHaveBeenCalled();
-      expect(await library.status()).toMatchObject({ pendingVectorJobs: 0, vectors: { count: 1 } });
+      expect(library.status()).toMatchObject({ vectors: { count: 1, pendingEmbeddings: 0 } });
       const results = (await library.search("зміст", { mode: "vector" })).results;
       expect(results).toHaveLength(1);
       expect(results[0]?.id).toBe(updated.id);
@@ -636,7 +655,7 @@ describe("book library integration", () => {
 
     await expect(library.index()).rejects.toThrow();
     expect(library.content.listChunks()).toEqual(prior);
-    expect(await library.status()).toMatchObject({
+    expect(library.status()).toMatchObject({
       documents: 1,
       vectors: { count: prior.length },
       lastRun: { status: "failed" },
@@ -653,25 +672,24 @@ describe("book library integration", () => {
       "book.md",
       "# Видалення\n\nТекст, який буде видалено.\n",
     );
-    class InterruptedDeletionRepository extends SqliteVectorRepository {
-      override async removeChunk(chunkId: string): Promise<void> {
-        await super.removeChunk(chunkId);
+    class InterruptedDeletionRepository extends SqliteSearchRepository {
+      override removeChunk(chunkId: string): void {
+        super.removeChunk(chunkId);
         throw new Error("Simulated interruption after durable vector deletion");
       }
     }
     const provider = fakeProvider();
     const vectors = new InterruptedDeletionRepository(join(config.dataDir, "vectors.sqlite"));
-    const initial = openLibrary({ provider, vectors });
+    const initial = openLibrary({ provider, search: vectors });
     await initial.index();
     await rm(source);
 
     await expect(initial.index()).rejects.toThrow(
       "Simulated interruption after durable vector deletion",
     );
-    expect(await initial.status()).toMatchObject({
+    expect(initial.status()).toMatchObject({
       chunks: 0,
-      vectors: { count: 0 },
-      pendingVectorJobs: 1,
+      vectors: { count: 0, pendingEmbeddings: 0 },
       lastRun: { status: "failed" },
     });
     expect((await initial.search("Текст", { mode: "lexical" })).results).toEqual([]);
@@ -681,45 +699,36 @@ describe("book library integration", () => {
     const recovered = openLibrary({ provider });
     expect(await recovered.embed()).toMatchObject({ embedded: 0, failed: 0 });
     expect(provider.embed).not.toHaveBeenCalled();
-    expect(await recovered.status()).toMatchObject({
+    expect(recovered.status()).toMatchObject({
       chunks: 0,
-      vectors: { count: 0 },
-      pendingVectorJobs: 0,
+      vectors: { count: 0, pendingEmbeddings: 0 },
     });
   });
 
-  it("does not count acknowledged vector writes as failed when a later write in the batch fails", async () => {
+  it("does not count completed vector writes as failed when a later write in the batch fails", async () => {
     await bookFile("Книга", "01.md", "# Перший\n\nПерший незалежний фрагмент.\n");
     await bookFile("Книга", "02.md", "# Другий\n\nДругий незалежний фрагмент.\n");
-    class PartialWriteRepository extends SqliteVectorRepository {
+    class PartialWriteRepository extends SqliteSearchRepository {
       writes = 0;
 
-      override async upsert(
-        profileId: string,
-        chunk: StoredChunk,
-        vector: number[],
-      ): Promise<void> {
+      override upsert(profileId: string, chunk: StoredChunk, vector: number[]): void {
         if (++this.writes === 2) throw new Error("Simulated second vector write failure");
-        await super.upsert(profileId, chunk, vector);
+        super.upsert(profileId, chunk, vector);
       }
     }
     const provider = fakeProvider();
     const vectors = new PartialWriteRepository(join(config.dataDir, "vectors.sqlite"));
-    const library = openLibrary({ provider, vectors });
+    const library = openLibrary({ provider, search: vectors });
 
     const failed = await library.index();
     expect(failed).toMatchObject({ embedded: 1, failed: 1 });
-    expect(await library.status()).toMatchObject({
+    expect(library.status()).toMatchObject({
       chunks: 2,
-      vectors: { count: 1 },
-      pendingVectorJobs: 1,
-      failedVectorJobs: 1,
+      vectors: { count: 1, pendingEmbeddings: 1 },
     });
     expect(await library.embed()).toMatchObject({ embedded: 1, failed: 0 });
-    expect(await library.status()).toMatchObject({
-      vectors: { count: 2 },
-      pendingVectorJobs: 0,
-      failedVectorJobs: 0,
+    expect(library.status()).toMatchObject({
+      vectors: { count: 2, pendingEmbeddings: 0 },
     });
   });
 
@@ -740,7 +749,6 @@ describe("book library integration", () => {
         "getDocumentState",
         "listBooks",
         "listSections",
-        "jobs",
         "status",
         "acquireWriterLock",
       ] as const;
@@ -759,64 +767,6 @@ describe("book library integration", () => {
       for (const spy of spies) expect(spy).not.toHaveBeenCalled();
     },
   );
-
-  it("awaits asynchronous search storage writes, queries, status and close", async () => {
-    await bookFile("Book", "chapter.md", "# Transport\n\nSailing on the ocean.\n");
-    const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
-    class DelayedSearchRepository extends SqliteVectorRepository {
-      closedAfterAwait = false;
-
-      override async upsertChunks(chunks: StoredChunk[]): Promise<void> {
-        await nextTurn();
-        await super.upsertChunks(chunks);
-      }
-
-      override async ensureProfile(
-        profileId: string,
-        dimensions: number,
-        metadata: Record<string, unknown>,
-      ): Promise<void> {
-        await nextTurn();
-        await super.ensureProfile(profileId, dimensions, metadata);
-      }
-
-      override async upsert(
-        profileId: string,
-        chunk: StoredChunk,
-        vector: number[],
-      ): Promise<void> {
-        await nextTurn();
-        await super.upsert(profileId, chunk, vector);
-      }
-
-      override async search(request: SearchRequest): Promise<SearchResponse> {
-        await nextTurn();
-        return super.search(request);
-      }
-
-      override async count(profileId?: string): Promise<number> {
-        await nextTurn();
-        return super.count(profileId);
-      }
-
-      override async close(): Promise<void> {
-        await nextTurn();
-        await super.close();
-        this.closedAfterAwait = true;
-      }
-    }
-    const search = new DelayedSearchRepository(":memory:");
-    const library = openLibrary({ provider: fakeProvider(), search });
-
-    expect(await library.index()).toMatchObject({ embedded: 1, failed: 0 });
-    expect(await library.status()).toMatchObject({ pendingVectorJobs: 0, vectors: { count: 1 } });
-    expect((await library.search("Sailing", { mode: "hybrid" })).results[0]?.matches).toEqual([
-      "lexical",
-      "vector",
-    ]);
-    await closeLibrary(library);
-    expect(search.closedAfterAwait).toBe(true);
-  });
 
   it("refreshes citation coordinates for unchanged chunk IDs without regenerating embeddings", async () => {
     const source = "# Navigation\n\nSailing across the ocean.\n";
@@ -857,18 +807,18 @@ describe("book library integration", () => {
     expect(await library.index()).toMatchObject({ updated: 1, embedded: 0, failed: 0 });
     expect((await library.search("Original", { mode: "lexical" })).results).toEqual([]);
     expect((await library.search("Replacement", { mode: "lexical" })).results).toHaveLength(1);
-    expect((await library.status()).pendingVectorJobs).toBe(0);
+    expect(library.status().vectors.pendingEmbeddings).toBeNull();
     await rm(source);
     expect(await library.index()).toMatchObject({ removed: 1, failed: 0 });
     expect((await library.search("Replacement", { mode: "lexical" })).results).toEqual([]);
-    expect(await library.status()).toMatchObject({ chunks: 0, pendingVectorJobs: 0 });
+    expect(library.status()).toMatchObject({ chunks: 0, vectors: { pendingEmbeddings: null } });
   });
 
   it("retries failed payload delivery after reopening without a provider", async () => {
     await bookFile("Book", "chapter.md", "# Recovery\n\nDurable searchable text.\n");
-    class InterruptedPayloadRepository extends SqliteVectorRepository {
-      override async upsertChunks(chunks: StoredChunk[]): Promise<void> {
-        await super.upsertChunks(chunks);
+    class InterruptedPayloadRepository extends SqliteSearchRepository {
+      override upsertChunks(chunks: StoredChunk[]): void {
+        super.upsertChunks(chunks);
         throw new Error("Simulated interruption after durable search payload write");
       }
     }
@@ -876,14 +826,12 @@ describe("book library integration", () => {
     const initial = openLibrary({ search });
     const report = await initial.index();
     expect(report.failed).toBeGreaterThan(0);
-    expect(initial.content.jobs()).toEqual(
-      expect.arrayContaining([expect.objectContaining({ operation: "upsert", profileId: "*" })]),
-    );
+    expect(initial.content.listChunks()).toHaveLength(1);
     await closeLibrary(initial);
 
     const recovered = openLibrary();
     expect(await recovered.index()).toMatchObject({ unchanged: 1, failed: 0 });
-    expect(recovered.content.jobs()).toEqual([]);
+
     expect((await recovered.search("Durable", { mode: "lexical" })).results).toHaveLength(1);
   });
 
