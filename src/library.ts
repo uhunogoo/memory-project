@@ -84,10 +84,7 @@ export class BookLibrary {
       throw new Error("Invalid indexing options structure: expected an optional boolean embed.");
     }
     const { embed } = validation.data;
-    const release = this.content.acquireWriterLock();
-    let run: number | undefined;
-    try {
-      run = this.content.startRun();
+    return this.content.withIndexingRun(async () => {
       // A missing configured root is an error, never an empty snapshot implying deletions.
       const discovery = await discoverBooks(this.config.booksDir);
       const sources: IndexedSource[] = [];
@@ -135,37 +132,13 @@ export class BookLibrary {
         failed: embedding.failed,
       });
       report.warnings.push(...embedding.warnings);
-      this.content.finishRun(run, report.failed ? "partial" : "completed", report);
       return report;
-    } catch (error) {
-      if (run !== undefined)
-        this.content.finishRun(run, "failed", {
-          error: error instanceof Error ? error.message : "Indexing failed",
-        });
-      throw error;
-    } finally {
-      release();
-    }
+    }, "Indexing failed");
   }
 
   async embed(): Promise<Pick<IndexReport, "embedded" | "reused" | "failed" | "warnings">> {
     if (!this.provider) throw new Error("Configure an embedding provider before running embed.");
-    const release = this.content.acquireWriterLock();
-    let run: number | undefined;
-    try {
-      run = this.content.startRun();
-      const report = await this.synchronizeSearch(true);
-      this.content.finishRun(run, report.failed ? "partial" : "completed", report);
-      return report;
-    } catch (error) {
-      if (run !== undefined)
-        this.content.finishRun(run, "failed", {
-          error: error instanceof Error ? error.message : "Embedding failed",
-        });
-      throw error;
-    } finally {
-      release();
-    }
+    return this.content.withIndexingRun(() => this.synchronizeSearch(true), "Embedding failed");
   }
 
   private async synchronizeSearch(

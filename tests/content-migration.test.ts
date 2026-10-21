@@ -7,7 +7,7 @@ import { parseMarkdown } from "../src/ingestion/markdown.js";
 import { SqliteContentRepository } from "../src/storage/content.js";
 
 describe("content schema migration", () => {
-  it("removes the v2 outbox while preserving content and the latest run", () => {
+  it("removes the v2 outbox while preserving content and the latest run", async () => {
     const directory = mkdtempSync(join(tmpdir(), "content-migration-"));
     const path = join(directory, "content.sqlite");
     let content = new SqliteContentRepository(path);
@@ -60,10 +60,11 @@ describe("content schema migration", () => {
       }
       expect(content.applySnapshot([], [])).toMatchObject({ removed: 1 });
       expect(content.listChunks()).toEqual([]);
-      content.startRun();
-      content.finishRun(1, "completed", {});
-      content.startRun();
-      expect(content.status().lastRun).toMatchObject({ id: 1, status: "running", details: null });
+      await content.withIndexingRun(async () => ({ failed: 0 }), "Indexing failed");
+      await content.withIndexingRun(async () => {
+        expect(content.status().lastRun).toMatchObject({ id: 1, status: "running", details: null });
+        return { failed: 0 };
+      }, "Indexing failed");
     } finally {
       content.close();
       rmSync(directory, { recursive: true, force: true });

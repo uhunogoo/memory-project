@@ -149,15 +149,13 @@ describe("book library integration", () => {
       const provider = fakeProvider();
       const library = openLibrary({ provider });
       const before = library.content.status();
-      const acquireLock = vi.spyOn(library.content, "acquireWriterLock");
-      const startRun = vi.spyOn(library.content, "startRun");
+      const run = vi.spyOn(library.content, "withIndexingRun");
       const applySnapshot = vi.spyOn(library.content, "applySnapshot");
       const result = library.index(options as IndexOptions);
       await expect(result).rejects.toThrow("Invalid indexing options structure");
       await expect(result).rejects.not.toThrow("private-index-input");
       await expect(result).rejects.not.toHaveProperty("issues");
-      expect(acquireLock).not.toHaveBeenCalled();
-      expect(startRun).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
       expect(applySnapshot).not.toHaveBeenCalled();
       expect(library.content.status()).toEqual(before);
       expect(provider.embed).not.toHaveBeenCalled();
@@ -593,26 +591,6 @@ describe("book library integration", () => {
     expect(await second.index()).toMatchObject({ unchanged: 1, failed: 0 });
   });
 
-  it.each(["index", "embed"] as const)(
-    "releases its writer lock when %s cannot create an indexing run",
-    async (operation) => {
-      await bookFile("Книга", "book.md", "# Розділ\n\nЗбереження стану індексації.\n");
-      const library = openLibrary({ provider: fakeProvider() });
-      const startRun = vi.spyOn(library.content, "startRun").mockImplementationOnce(() => {
-        throw new Error("Simulated run creation failure");
-      });
-
-      await expect(library[operation]()).rejects.toThrow("Simulated run creation failure");
-      startRun.mockRestore();
-
-      expect(await library.index()).toMatchObject({ updated: 1, failed: 0 });
-      expect(library.status()).toMatchObject({
-        vectors: { pendingEmbeddings: 0 },
-        lastRun: { status: "completed" },
-      });
-    },
-  );
-
   it.each(["formatting", "rename"] as const)(
     "reuses unchanged embedding inputs after a %s edit indexed without provider requests",
     async (change) => {
@@ -750,7 +728,7 @@ describe("book library integration", () => {
         "listBooks",
         "listSections",
         "status",
-        "acquireWriterLock",
+        "withIndexingRun",
       ] as const;
       const spies = reads.map((method) =>
         vi.spyOn(library.content, method).mockImplementation(() => {

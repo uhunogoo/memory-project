@@ -96,7 +96,31 @@ export class SqliteContentRepository {
     }
   }
 
-  acquireWriterLock(): () => void {
+  /** Owns the writer lifetime without holding a SQL transaction across asynchronous work. */
+  async withIndexingRun<T extends { failed: number }>(
+    work: () => Promise<T>,
+    failureMessage: string,
+  ): Promise<T> {
+    const release = this.acquireWriterLock();
+    let run: number | undefined;
+    try {
+      run = this.startRun();
+      const report = await work();
+      this.finishRun(run, report.failed ? "partial" : "completed", report);
+      return report;
+    } catch (error) {
+      if (run !== undefined) {
+        this.finishRun(run, "failed", {
+          error: error instanceof Error ? error.message : failureMessage,
+        });
+      }
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  private acquireWriterLock(): () => void {
     const token = randomUUID();
     this.transaction(() => {
       const lock = this.db.prepare("SELECT * FROM writer_lock WHERE id=1").get();
@@ -123,14 +147,18 @@ export class SqliteContentRepository {
     };
   }
 
-  startRun(): number {
+  private startRun(): number {
     this.db
       .prepare("INSERT OR REPLACE INTO indexing_runs(id,started_at,status) VALUES (1,?,'running')")
       .run(new Date().toISOString());
     return 1;
   }
 
-  finishRun(id: number, status: "completed" | "partial" | "failed", details: unknown): void {
+  private finishRun(
+    id: number,
+    status: "completed" | "partial" | "failed",
+    details: unknown,
+  ): void {
     this.db
       .prepare("UPDATE indexing_runs SET status=?,finished_at=?,details=? WHERE id=?")
       .run(status, new Date().toISOString(), JSON.stringify(details), id);
