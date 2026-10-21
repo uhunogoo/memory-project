@@ -22,11 +22,21 @@ const embeddingConfigSchema = z.object({
   queryPrefix: z.string(),
 });
 
+export const rerankConfigSchema = z.object({
+  url: z.string(),
+  model: z.string(),
+  apiKey: z.string().optional(),
+  candidateLimit: z.number().int(),
+  timeoutMs: z.number().int(),
+  retries: z.number().int(),
+});
+
 export const appConfigSchema = z.object({
   booksDir: z.string(),
   dataDir: z.string(),
   chunking: chunkOptionsSchema,
   embedding: embeddingConfigSchema.optional(),
+  rerank: rerankConfigSchema.optional(),
 });
 
 const embeddingFileConfigSchema = z.strictObject({
@@ -41,16 +51,24 @@ const embeddingFileConfigSchema = z.strictObject({
   apiKeyEnv: z.string().optional(),
 });
 
+const rerankFileConfigSchema = z.strictObject({
+  ...rerankConfigSchema.omit({ apiKey: true }).partial().shape,
+  apiKeyEnv: z.string().optional(),
+});
+
 const configFileSchema = z.strictObject({
   ...appConfigSchema.pick({ booksDir: true, dataDir: true }).partial().shape,
   chunking: z.strictObject(chunkOptionsSchema.partial().shape).optional(),
   embedding: embeddingFileConfigSchema.optional(),
+  rerank: z.union([rerankFileConfigSchema, z.literal(false)]).optional(),
 });
 
 export type AppConfig = z.infer<typeof appConfigSchema>;
 export type ChunkOptions = z.infer<typeof chunkOptionsSchema>;
 export type EmbeddingConfig = z.infer<typeof embeddingConfigSchema>;
+export type RerankConfig = z.infer<typeof rerankConfigSchema>;
 type EmbeddingFileConfig = z.infer<typeof embeddingFileConfigSchema>;
+type RerankFileConfig = z.infer<typeof rerankFileConfigSchema>;
 
 function text(value: string | undefined, field: string, fallback?: string): string {
   if (value === undefined && fallback !== undefined) return fallback;
@@ -87,6 +105,52 @@ export function validateEmbeddingConfigValues(config: EmbeddingConfig): void {
   if (config.apiKey !== undefined && (!config.apiKey.trim() || /[\r\n]/.test(config.apiKey))) {
     throw new Error("The embedding API key is missing or invalid.");
   }
+}
+
+function hasControlCharacters(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 || code === 127;
+  });
+}
+
+/** Business rules shared by file loading and the public rerank provider factory. */
+export function validateRerankConfigValues(config: RerankConfig): void {
+  text(config.model, "rerank.model");
+  integer(config.candidateLimit, "rerank.candidateLimit", 1, 100);
+  integer(config.timeoutMs, "rerank.timeoutMs", 100, 600_000);
+  integer(config.retries, "rerank.retries", 0, 5);
+  if (
+    config.apiKey !== undefined &&
+    (!config.apiKey.trim() || hasControlCharacters(config.apiKey))
+  ) {
+    throw new Error("The rerank API key is missing or invalid.");
+  }
+}
+
+/** Keep the configured endpoint intact and never echo URLs containing secrets. */
+export function normalizeRerankUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("rerank.url must be an absolute HTTP or HTTPS URL.");
+  }
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("rerank.url must use HTTP or HTTPS.");
+  }
+  if (
+    !/^https?:\/\//i.test(value) ||
+    hasControlCharacters(value) ||
+    value.includes(" ") ||
+    value.includes("\\")
+  ) {
+    throw new Error("rerank.url must be an absolute HTTP or HTTPS URL.");
+  }
+  if (/^https?:\/\/[^/]*@/i.test(value) || value.includes("?") || value.includes("#")) {
+    throw new Error("rerank.url must not contain credentials, query parameters, or a fragment.");
+  }
+  return url.toString();
 }
 
 /** Validate URLs without exposing embedded credentials in an error. */
@@ -145,6 +209,46 @@ function embeddingConfig(embedding: EmbeddingFileConfig): EmbeddingConfig {
   return config;
 }
 
+function rerankConfig(rerank: RerankFileConfig | false | undefined): RerankConfig | undefined {
+  if (rerank === false) return undefined;
+  const settings = rerank ?? {};
+  const url = settings.url ?? process.env.RERANK_URL ?? process.env.COHERE_RERANK_URL;
+  const model = settings.model ?? process.env.RERANK_MODEL ?? process.env.COHERE_RERANK_MODEL;
+  const defaultKey = process.env.RERANK_API_KEY ?? process.env.COHERE_RERANK_API_KEY;
+  if (
+    Object.keys(settings).length === 0 &&
+    url === undefined &&
+    model === undefined &&
+    defaultKey === undefined
+  ) {
+    return undefined;
+  }
+  const config: RerankConfig = {
+    url: normalizeRerankUrl(text(url, "rerank.url")),
+    model: text(model, "rerank.model"),
+    candidateLimit: settings.candidateLimit ?? 40,
+    timeoutMs: settings.timeoutMs ?? 60_000,
+    retries: settings.retries ?? 2,
+  };
+  if (settings.apiKeyEnv !== undefined) {
+    const variable = text(settings.apiKeyEnv, "rerank.apiKeyEnv");
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable)) {
+      throw new Error("rerank.apiKeyEnv must name a valid environment variable.");
+    }
+    const key = process.env[variable];
+    if (key === undefined) {
+      throw new Error(
+        "The environment variable configured by rerank.apiKeyEnv is missing or invalid.",
+      );
+    }
+    config.apiKey = key;
+  } else if (defaultKey !== undefined) {
+    config.apiKey = defaultKey;
+  }
+  validateRerankConfigValues(config);
+  return config;
+}
+
 /** Paths in an explicit config are relative to that file, regardless of the caller's cwd. */
 export async function loadConfig(configPath?: string): Promise<AppConfig> {
   const path = resolve(configPath ?? "memory.config.json");
@@ -187,5 +291,7 @@ export async function loadConfig(configPath?: string): Promise<AppConfig> {
     chunking: { targetTokens, overlapTokens },
   };
   if (raw.embedding !== undefined) config.embedding = embeddingConfig(raw.embedding);
+  const rerank = rerankConfig(raw.rerank);
+  if (rerank !== undefined) config.rerank = rerank;
   return config;
 }

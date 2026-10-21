@@ -33,6 +33,10 @@ describe("CLI argument parsing", () => {
     });
   });
 
+  it("supports bypassing reranking for a single search", () => {
+    expect(parseCliArguments(["search", "query", "--no-rerank"])?.values["no-rerank"]).toBe(true);
+  });
+
   it("delegates flag types and unknown flags to node parseArgs", () => {
     expect(() => parseCliArguments(["search", "query", "--mode"])).toThrow();
     expect(() => parseCliArguments(["search", "query", "--json=true"])).toThrow();

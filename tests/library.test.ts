@@ -189,6 +189,7 @@ describe("book library integration", () => {
     ["query", { limit: Number.NaN }, "Search limit must be between 1 and 100."],
     ["query", { limit: Number.POSITIVE_INFINITY }, "Search limit must be between 1 and 100."],
     ["query", { bookId: ["private-search-input"] }, "Search book ID must be a string."],
+    ["query", { rerank: "false" }, "Search rerank must be a boolean."],
   ] as const)(
     "rejects malformed search input before reading stores or embedding %#",
     async (query, options, message) => {

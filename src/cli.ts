@@ -25,10 +25,11 @@ Options:
   --book ID                    Restrict to a book ID from the books command
   --json                       Machine-readable JSON output
   --no-embed                   Update text without requesting embeddings
+  --no-rerank                  Skip the configured reranker for this search
   --help                       Show help
 
-Without an embedding configuration, indexing and lexical search work offline.
-Only embedding requests use your configured provider. No answers are generated.
+Without model configuration, indexing and lexical search work offline.
+Embeddings and optional reranking use configured HTTP endpoints. No answers are generated.
 `;
 
 async function main(): Promise<void> {
@@ -91,6 +92,7 @@ async function main(): Promise<void> {
           mode: values.mode,
           limit: values.limit === undefined ? undefined : Number(values.limit),
           bookId: values.book,
+          rerank: values["no-rerank"] ? false : undefined,
         });
         if (values.json) {
           result = response;
@@ -103,7 +105,7 @@ async function main(): Promise<void> {
             `\n${index + 1}. ${item.bookTitle} / ${item.headingPath.join(" / ") || "(preamble)"}`,
           );
           console.log(
-            `${item.relativePath}#${item.anchor} · lines ${item.startLine}–${item.endLine} · ${item.matches.join("+")} · RRF ${item.score.toFixed(5)}`,
+            `${item.relativePath}#${item.anchor} · lines ${item.startLine}–${item.endLine} · ${item.matches.join("+")} · ${item.rerankScore === undefined ? "RRF" : "Blended"} ${item.score.toFixed(5)}`,
           );
           console.log(`chunk: ${item.id}\ndocument: ${item.documentId}\n\n${item.markdown}`);
         }

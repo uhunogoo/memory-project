@@ -4,13 +4,28 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { loadConfig } from "../src/config.js";
+import {
+  loadConfig,
+  normalizeRerankUrl,
+  rerankConfigSchema,
+  validateRerankConfigValues,
+} from "../src/config.js";
 import { createEmbeddingProvider } from "../src/providers/index.js";
 
 let directory: string;
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "memory-config-"));
+  for (const variable of [
+    "RERANK_URL",
+    "RERANK_MODEL",
+    "RERANK_API_KEY",
+    "COHERE_RERANK_URL",
+    "COHERE_RERANK_MODEL",
+    "COHERE_RERANK_API_KEY",
+  ]) {
+    vi.stubEnv(variable, undefined);
+  }
 });
 
 afterEach(async () => {
@@ -209,5 +224,236 @@ describe("configuration", () => {
       embedding: { provider: "ollama", model: "embed", apiKeyEnv: "MEMORY_MISSING_API_KEY" },
     });
     await expect(loadConfig(path)).rejects.toThrow("missing or invalid");
+  });
+});
+
+describe("rerank configuration", () => {
+  it("enables reranking from the existing Cohere environment variables without a config file", async () => {
+    vi.spyOn(process, "cwd").mockReturnValue(directory);
+    vi.stubEnv("COHERE_RERANK_URL", "https://example.test/v2/rerank");
+    vi.stubEnv("COHERE_RERANK_MODEL", "rerank-multilingual");
+    vi.stubEnv("COHERE_RERANK_API_KEY", "test-key");
+    const config = await loadConfig();
+    expect(config.rerank).toEqual({
+      url: "https://example.test/v2/rerank",
+      model: "rerank-multilingual",
+      apiKey: "test-key",
+      candidateLimit: 40,
+      timeoutMs: 60_000,
+      retries: 2,
+    });
+  });
+
+  it("prefers generic environment settings and falls back per field", async () => {
+    vi.stubEnv("COHERE_RERANK_URL", "https://old.example.test/v2/rerank");
+    vi.stubEnv("COHERE_RERANK_MODEL", "fallback-model");
+    vi.stubEnv("COHERE_RERANK_API_KEY", "fallback-key");
+    vi.stubEnv("RERANK_URL", "http://127.0.0.1:8080/rerank/");
+    vi.stubEnv("RERANK_API_KEY", "generic-key");
+    const path = await configFile({});
+    expect((await loadConfig(path)).rerank).toMatchObject({
+      url: "http://127.0.0.1:8080/rerank/",
+      model: "fallback-model",
+      apiKey: "generic-key",
+    });
+    vi.stubEnv("RERANK_MODEL", "generic-model");
+    expect((await loadConfig(path)).rerank?.model).toBe("generic-model");
+  });
+
+  it("allows a config file to override endpoint, model, credentials, and request limits", async () => {
+    vi.stubEnv("RERANK_URL", "https://old.example.test/rerank");
+    vi.stubEnv("RERANK_MODEL", "old-model");
+    vi.stubEnv("RERANK_API_KEY", "old-key");
+    vi.stubEnv("MEMORY_TEST_RERANK_KEY", "configured-key");
+    const config = await loadConfig(
+      await configFile({
+        rerank: {
+          url: "https://new.example.test/api/rerank/",
+          model: "new-model",
+          apiKeyEnv: "MEMORY_TEST_RERANK_KEY",
+          candidateLimit: 75,
+          timeoutMs: 10_000,
+          retries: 0,
+        },
+      }),
+    );
+    expect(config.rerank).toEqual({
+      url: "https://new.example.test/api/rerank/",
+      model: "new-model",
+      apiKey: "configured-key",
+      candidateLimit: 75,
+      timeoutMs: 10_000,
+      retries: 0,
+    });
+  });
+
+  it("allows local endpoints without an API key and keeps the complete path", async () => {
+    const config = await loadConfig(
+      await configFile({ rerank: { url: "http://localhost:8080/custom/rerank", model: "local" } }),
+    );
+    expect(config.rerank?.url).toBe("http://localhost:8080/custom/rerank");
+    expect(config.rerank?.apiKey).toBeUndefined();
+  });
+
+  it("stays disabled with no settings, including an empty config object", async () => {
+    expect((await loadConfig(await configFile({}))).rerank).toBeUndefined();
+    expect((await loadConfig(await configFile({ rerank: {} }))).rerank).toBeUndefined();
+  });
+
+  it("lets explicit false disable even invalid environment settings", async () => {
+    vi.stubEnv("RERANK_URL", "private-invalid-url");
+    vi.stubEnv("RERANK_API_KEY", "private-secret\n");
+    expect((await loadConfig(await configFile({ rerank: false }))).rerank).toBeUndefined();
+  });
+
+  it.each([
+    [{ rerank: { model: "model" } }, "rerank.url"],
+    [{ rerank: { url: "https://example.test/rerank" } }, "rerank.model"],
+    [{ rerank: { candidateLimit: 40 } }, "rerank.url"],
+  ])("rejects partial file settings clearly %#", async (value, field) => {
+    await expect(loadConfig(await configFile(value))).rejects.toThrow(field);
+  });
+
+  it.each([
+    ["RERANK_URL", "https://example.test/rerank", "rerank.model"],
+    ["COHERE_RERANK_MODEL", "model", "rerank.url"],
+    ["RERANK_API_KEY", "private-secret", "rerank.url"],
+  ])(
+    "rejects partial environment settings without exposing values %#",
+    async (variable, value, field) => {
+      vi.stubEnv(variable, value);
+      const result = loadConfig(await configFile({}));
+      await expect(result).rejects.toThrow(field);
+      await expect(result).rejects.not.toThrow("private-secret");
+    },
+  );
+
+  it.each([
+    { candidateLimit: 0 },
+    { candidateLimit: 101 },
+    { timeoutMs: 99 },
+    { timeoutMs: 600_001 },
+    { retries: -1 },
+    { retries: 6 },
+    { model: " \t" },
+    { model: "private-secret\0" },
+  ])(
+    "shares numeric and model business rules with programmatic configuration %#",
+    async (overrides) => {
+      const rerank = { url: "https://example.test/rerank", model: "model" };
+      const valid = (await loadConfig(await configFile({ rerank }))).rerank!;
+      const result = loadConfig(await configFile({ rerank: { ...rerank, ...overrides } }));
+      await expect(result).rejects.toThrow(`rerank.${Object.keys(overrides)[0]}`);
+      expect(() => validateRerankConfigValues({ ...valid, ...overrides })).toThrow(
+        `rerank.${Object.keys(overrides)[0]}`,
+      );
+      await expect(result).rejects.not.toThrow("private-secret");
+    },
+  );
+
+  it.each([
+    "private-secret",
+    "/rerank/private-secret",
+    "file:///private-secret",
+    "https://user:private-secret@example.test/rerank",
+    "https://@example.test/rerank",
+    "https://example.test/rerank?key=private-secret",
+    "https://example.test/rerank#private-secret",
+    "https://example.test/rerank?",
+    "https://example.test/rerank#",
+    "https://example.test/\nprivate-secret",
+    "https:example.test/private-secret",
+  ])("rejects invalid endpoint URLs without leaking values %#", async (url) => {
+    const result = loadConfig(await configFile({ rerank: { url, model: "model" } }));
+    await expect(result).rejects.toThrow("rerank.url");
+    await expect(result).rejects.not.toThrow("private-secret");
+    expect(() => normalizeRerankUrl(url)).toThrow("rerank.url");
+    expect(() => normalizeRerankUrl(url)).not.toThrow("private-secret");
+  });
+
+  it.each(["", " \t", "private-secret\n"])(
+    "rejects invalid credential values without exposing them %#",
+    async (apiKey) => {
+      vi.stubEnv("RERANK_URL", "https://example.test/rerank");
+      vi.stubEnv("RERANK_MODEL", "model");
+      const valid = (await loadConfig(await configFile({}))).rerank!;
+      vi.stubEnv("RERANK_API_KEY", apiKey);
+      const result = loadConfig(await configFile({}));
+      await expect(result).rejects.toThrow("missing or invalid");
+      await expect(result).rejects.not.toThrow("private-secret");
+      const validate = () => validateRerankConfigValues({ ...valid, apiKey });
+      expect(validate).toThrow("missing or invalid");
+      expect(validate).not.toThrow("private-secret");
+    },
+  );
+
+  it("rejects NUL bytes in programmatic credentials without exposing them", async () => {
+    const config = await loadConfig(
+      await configFile({ rerank: { url: "http://localhost:8080/rerank", model: "local" } }),
+    );
+    const validate = () =>
+      validateRerankConfigValues({ ...config.rerank!, apiKey: "private-secret\0" });
+    expect(validate).toThrow("missing or invalid");
+    expect(validate).not.toThrow("private-secret");
+  });
+
+  it.each(["", "private-secret-key", "123INVALID", "PRIVATE\0SECRET"])(
+    "rejects invalid credential variable names without exposing them %#",
+    async (apiKeyEnv) => {
+      const result = loadConfig(
+        await configFile({
+          rerank: { url: "https://example.test/rerank", model: "model", apiKeyEnv },
+        }),
+      );
+      await expect(result).rejects.toThrow("rerank.apiKeyEnv");
+      await expect(result).rejects.not.toThrow("private-secret");
+    },
+  );
+
+  it("requires an explicitly selected credential variable even when a default key exists", async () => {
+    vi.stubEnv("RERANK_API_KEY", "default-key");
+    vi.stubEnv("MEMORY_MISSING_RERANK_KEY", undefined);
+    const result = loadConfig(
+      await configFile({
+        rerank: {
+          url: "https://example.test/rerank",
+          model: "model",
+          apiKeyEnv: "MEMORY_MISSING_RERANK_KEY",
+        },
+      }),
+    );
+    await expect(result).rejects.toThrow("rerank.apiKeyEnv is missing or invalid");
+  });
+
+  it.each([
+    true,
+    null,
+    [],
+    { model: ["private-secret"] },
+    { apiKey: "private-secret" },
+    { "private-secret": true },
+    { candidateLimit: "40" },
+    { candidateLimit: 40.5 },
+  ])(
+    "rejects invalid file structures without echoing unknown fields or values %#",
+    async (rerank) => {
+      const result = loadConfig(await configFile({ rerank }));
+      await expect(result).rejects.toThrow("Invalid configuration structure at rerank");
+      await expect(result).rejects.not.toThrow("private-secret");
+    },
+  );
+
+  it("keeps structural parsing separate from numeric business limits", () => {
+    const result = rerankConfigSchema.safeParse({
+      url: "https://example.test/rerank",
+      model: "model",
+      candidateLimit: 0,
+      timeoutMs: 60_000,
+      retries: 2,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(() => validateRerankConfigValues(result.data)).toThrow("rerank.candidateLimit");
+    }
   });
 });

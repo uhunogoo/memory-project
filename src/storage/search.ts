@@ -12,6 +12,7 @@ const searchOptionsSchema = z.object({
   mode: searchModeSchema.optional(),
   limit: z.number().int().optional(),
   bookId: z.string().optional(),
+  rerank: z.boolean().optional(),
 });
 
 // Public input structure only; defaults and query/limit policies stay in the library.

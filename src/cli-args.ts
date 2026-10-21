@@ -26,6 +26,7 @@ export function parseCliArguments(argv: string[]) {
       book: { type: "string" },
       json: { type: "boolean" },
       "no-embed": { type: "boolean" },
+      "no-rerank": { type: "boolean" },
       help: { type: "boolean" },
     },
   });

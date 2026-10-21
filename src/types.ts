@@ -1,6 +1,6 @@
 import type { EmbeddingConfig } from "./config.js";
 
-export type { AppConfig, ChunkOptions, EmbeddingConfig } from "./config.js";
+export type { AppConfig, ChunkOptions, EmbeddingConfig, RerankConfig } from "./config.js";
 export type { IndexOptions } from "./library.js";
 export type EmbeddingInputKind = "document" | "query";
 
@@ -66,6 +66,18 @@ export interface EmbeddingProvider {
   embed(texts: string[], kind: EmbeddingInputKind): Promise<number[][]>;
 }
 
+export interface RerankResult {
+  /** Zero-based position in the submitted documents. */
+  index: number;
+  /** Relevance score between 0 and 1. */
+  score: number;
+}
+
+export interface RerankProvider {
+  /** Return exactly one score per document; response order is unrestricted. */
+  rerank(query: string, documents: string[]): Promise<RerankResult[]>;
+}
+
 export interface StoredChunk extends ParsedChunk {
   documentId: string;
   bookId: string;
@@ -75,6 +87,9 @@ export interface StoredChunk extends ParsedChunk {
 }
 
 export interface SearchResult extends StoredChunk {
+  /** RRF score, or the position-aware blend when rerankScore is present. */
   score: number;
+  rrfScore?: number;
+  rerankScore?: number;
   matches: ("lexical" | "vector")[];
 }

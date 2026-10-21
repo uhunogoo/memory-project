@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { discoverBooks } from "./ingestion/books.js";
 import { CHUNKER_VERSION, parseMarkdown } from "./ingestion/markdown.js";
 import { createEmbeddingProvider } from "./providers/index.js";
+import { createRerankProvider } from "./providers/rerank.js";
 import { appConfigSchema } from "./config.js";
 import { z } from "zod";
 import { searchInputSchema } from "./storage/search.js";
@@ -12,7 +13,7 @@ import { SqliteContentRepository } from "./storage/content.js";
 import type { IndexedSource } from "./storage/content.js";
 import { SqliteSearchRepository } from "./storage/search.js";
 import type { SearchResponse } from "./storage/search.js";
-import type { AppConfig, EmbeddingProvider, StoredChunk } from "./types.js";
+import type { AppConfig, EmbeddingProvider, RerankProvider, StoredChunk } from "./types.js";
 
 // Only the public call's structure; the default embedding behavior stays in index().
 const indexOptionsSchema = z.object({
@@ -48,11 +49,13 @@ export class BookLibrary {
   private contentRepository?: SqliteContentRepository;
   private searchRepository?: SqliteSearchRepository;
   private readonly provider?: EmbeddingProvider;
+  private readonly reranker?: RerankProvider;
 
   constructor(
     config: AppConfig,
     dependencies: {
       provider?: EmbeddingProvider;
+      reranker?: RerankProvider;
       search?: SqliteSearchRepository;
     } = {},
   ) {
@@ -61,6 +64,9 @@ export class BookLibrary {
       dependencies.provider ??
       (this.config.embedding ? createEmbeddingProvider(this.config.embedding) : undefined);
     this.searchRepository = dependencies.search;
+    this.reranker =
+      dependencies.reranker ??
+      (this.config.rerank ? createRerankProvider(this.config.rerank) : undefined);
   }
 
   get content(): SqliteContentRepository {
@@ -234,18 +240,24 @@ export class BookLibrary {
           throw new Error("Search limit must be between 1 and 100.");
         case "options.bookId":
           throw new Error("Search book ID must be a string.");
+        case "options.rerank":
+          throw new Error("Search rerank must be a boolean.");
         default:
           throw new Error("Search options must be an object.");
       }
     }
     const {
       query: searchQuery,
-      options: { mode = "hybrid", limit = 10, bookId },
+      options: { mode = "hybrid", limit = 10, bookId, rerank },
     } = validation.data;
     if (!searchQuery.trim()) throw new Error("Search query must not be empty.");
     if (searchQuery.length > 8192)
       throw new Error("Search query is too long (maximum 8192 characters).");
     if (limit < 1 || limit > 100) throw new Error("Search limit must be between 1 and 100.");
+    if (rerank === true && !this.reranker) {
+      throw new Error("Configure a reranker before requesting reranking.");
+    }
+    const reranker = rerank === false ? undefined : this.reranker;
     const store = this.searchStore();
     const warnings: string[] = [];
     let vector: number[] | undefined;
@@ -266,12 +278,44 @@ export class BookLibrary {
     const request = {
       query: searchQuery,
       mode: effectiveMode,
-      limit,
+      // Rerank a wider pool before applying the user's result limit.
+      limit: reranker ? Math.max(limit, this.config.rerank?.candidateLimit ?? 40) : limit,
       bookId,
       profileId: this.provider?.profileId,
       vector,
     };
     const response = store.search(request);
+    if (reranker && response.results.length > 0) {
+      try {
+        const candidates = response.results;
+        const scores = await reranker.rerank(
+          searchQuery,
+          candidates.map((candidate) => candidate.embeddingText),
+        );
+        // QMD's position-aware blend protects strong retrieval matches while
+        // giving the model more influence further down the candidate list.
+        // https://github.com/tobi/qmd/blob/main/src/store.ts
+        response.results = scores
+          .map(({ index, score }) => {
+            const candidate = candidates[index]!;
+            const rank = index + 1;
+            const weight = rank <= 3 ? 0.75 : rank <= 10 ? 0.6 : 0.4;
+            return {
+              ...candidate,
+              rrfScore: candidate.score,
+              rerankScore: score,
+              score: weight / rank + (1 - weight) * score,
+              rank,
+            };
+          })
+          .sort((a, b) => b.score - a.score || a.rank - b.rank)
+          .map(({ rank: _rank, ...result }) => result);
+      } catch {
+        // Keep retrieval scores/order and avoid leaking provider data in warnings.
+        warnings.push("Reranking unavailable; returning retrieval results.");
+      }
+    }
+    response.results = response.results.slice(0, limit);
     return { ...response, mode, warnings: [...warnings, ...response.warnings] };
   }
 
