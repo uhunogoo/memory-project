@@ -10,8 +10,7 @@ import type { ChunkOptions, ParsedChunk, ParsedDocument, ParsedSection } from ".
 import { z } from "zod";
 const frontmatterSchema = z.object({ title: z.string().optional() });
 
-// Revalidate previously indexed frontmatter once under the external metadata contract.
-export const CHUNKER_VERSION = "markdown-ast-v2";
+export const CHUNKER_VERSION = "markdown-ast-v3";
 
 interface AstNode {
   type: string;
@@ -145,7 +144,7 @@ function chunkSpans(
 }
 
 /** Read text from the original AST, so slicing a fenced block never invents a new fence. */
-function searchableText(node: AstNode, markdown: string, start: number, end: number): string {
+function plainText(node: AstNode, markdown: string, start: number, end: number): string {
   const nodeStart = startOf(node);
   const nodeEnd = node.type === "root" ? markdown.length : endOf(node);
   if (nodeEnd <= start || nodeStart >= end) return "";
@@ -206,7 +205,7 @@ function searchableText(node: AstNode, markdown: string, start: number, end: num
     ]);
     const separator = inline.has(node.type) ? "" : node.type === "tableRow" ? "\t" : "\n";
     return node.children
-      .map((child) => searchableText(child, markdown, start, end))
+      .map((child) => plainText(child, markdown, start, end))
       .filter(Boolean)
       .join(separator);
   }
@@ -217,7 +216,7 @@ function searchableText(node: AstNode, markdown: string, start: number, end: num
   return "";
 }
 
-function documentTitle(tree: AstNode, bookTitle: string): string {
+function documentTitle(tree: AstNode, fallbackTitle: string): string {
   const frontmatter = tree.children?.find((node) => node.type === "yaml");
   if (frontmatter?.value) {
     const metadata: unknown = parseYaml(frontmatter.value, { maxAliasCount: 100 });
@@ -231,23 +230,27 @@ function documentTitle(tree: AstNode, bookTitle: string): string {
     if (validation.data.title?.trim()) return validation.data.title.trim();
   }
   const heading = tree.children?.find((node) => node.type === "heading" && node.depth === 1);
-  return heading ? toString(heading).trim() || bookTitle : bookTitle;
+  return heading ? toString(heading).trim() || fallbackTitle : fallbackTitle;
 }
 
 export function parseMarkdown(
   documentId: string,
   markdown: string,
-  bookTitle: string,
+  fallbackTitle: string,
   options: ChunkOptions,
 ): ParsedDocument {
-  if (options.targetTokens < 1) {
+  if (!Number.isSafeInteger(options.targetTokens) || options.targetTokens < 1) {
     throw new Error("targetTokens must be a positive integer.");
   }
-  if (options.overlapTokens < 0 || options.overlapTokens >= options.targetTokens) {
+  if (
+    !Number.isSafeInteger(options.overlapTokens) ||
+    options.overlapTokens < 0 ||
+    options.overlapTokens >= options.targetTokens
+  ) {
     throw new Error("overlapTokens must be a non-negative integer smaller than targetTokens.");
   }
   const tree = parser.parse(markdown) as AstNode;
-  const title = documentTitle(tree, bookTitle);
+  const title = documentTitle(tree, fallbackTitle);
   const lineAt = lineLookup(markdown);
   const slugger = new GithubSlugger();
   const root: ParsedSection = {
@@ -298,17 +301,7 @@ export function parseMarkdown(
     const start = section.startOffset;
     const end = sections[index + 1]?.startOffset ?? markdown.length;
     if (start >= end || !markdown.slice(start, end).trim()) continue;
-    const context =
-      [
-        `Book: ${bookTitle}`,
-        ...(section.headingPath.length ? [`Section: ${section.headingPath.join(" > ")}`] : []),
-      ].join("\n") + "\n\n";
-    const maxBytes = options.targetTokens * 3 - Buffer.byteLength(context, "utf8");
-    if (maxBytes < 12) {
-      throw new Error(
-        `Chunk target is too small for the book/section context "${section.headingPath.join(" > ") || bookTitle}". Increase targetTokens or shorten the title/headings.`,
-      );
-    }
+    const maxBytes = options.targetTokens * 3;
     const overlapBytes = Math.min(options.overlapTokens * 3, Math.floor(maxBytes / 3));
     const boundaries = blockBoundaries.filter((offset) => offset > start && offset < end);
     for (const [startOffset, endOffset] of chunkSpans(
@@ -320,8 +313,7 @@ export function parseMarkdown(
       boundaries,
     )) {
       const raw = markdown.slice(startOffset, endOffset);
-      const text = searchableText(tree, markdown, startOffset, endOffset).trim();
-      const embeddingText = context + text;
+      const text = plainText(tree, markdown, startOffset, endOffset).trim();
       const contentHash = hash(raw);
       const duplicateKey = `${section.id}\0${contentHash}`;
       const occurrence = occurrences.get(duplicateKey) ?? 0;
@@ -332,15 +324,13 @@ export function parseMarkdown(
         ordinal: chunks.length,
         markdown: raw,
         text,
-        embeddingText,
         contentHash,
-        inputHash: hash(embeddingText),
         headingPath: section.headingPath,
         startOffset,
         endOffset,
         startLine: lineAt(startOffset),
         endLine: lineAt(Math.max(startOffset, endOffset - 1)),
-        estimatedTokens: estimateTokens(embeddingText),
+        estimatedTokens: estimateTokens(raw),
       });
     }
   }

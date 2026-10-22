@@ -1,27 +1,6 @@
-import type { EmbeddingConfig } from "./config.js";
-
-export type { AppConfig, ChunkOptions, EmbeddingConfig } from "./config.js";
-export type { IndexOptions } from "./library.js";
-export type EmbeddingInputKind = "document" | "query";
-
-export interface SourceFile {
-  relativePath: string;
-  markdown: string;
-  order: number;
-}
-
-export interface DiscoveredBook {
-  id: string;
-  directory: string;
-  title: string;
-  author?: string;
-  language?: string;
-  files: SourceFile[];
-}
-
-export interface DiscoveryResult {
-  books: DiscoveredBook[];
-  warnings: string[];
+export interface ChunkOptions {
+  targetTokens: number;
+  overlapTokens: number;
 }
 
 export interface ParsedSection {
@@ -43,9 +22,7 @@ export interface ParsedChunk {
   ordinal: number;
   markdown: string;
   text: string;
-  embeddingText: string;
   contentHash: string;
-  inputHash: string;
   headingPath: string[];
   startOffset: number;
   endOffset: number;
@@ -58,23 +35,4 @@ export interface ParsedDocument {
   title: string;
   sections: ParsedSection[];
   chunks: ParsedChunk[];
-}
-
-export interface EmbeddingProvider {
-  readonly profileId: string;
-  readonly config: EmbeddingConfig;
-  embed(texts: string[], kind: EmbeddingInputKind): Promise<number[][]>;
-}
-
-export interface StoredChunk extends ParsedChunk {
-  documentId: string;
-  bookId: string;
-  bookTitle: string;
-  relativePath: string;
-  anchor: string;
-}
-
-export interface SearchResult extends StoredChunk {
-  score: number;
-  matches: ("lexical" | "vector")[];
 }

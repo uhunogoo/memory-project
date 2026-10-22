@@ -2,7 +2,7 @@
   "name": "book-memory",
   "version": "0.1.0",
   "private": true,
-  "description": "Markdown book indexing and hybrid retrieval with independent text and vector stores",
+  "description": "Configurable Markdown chunking CLI",
   "bin": {
     "book-memory": "./dist/cli.mjs"
   },
@@ -14,8 +14,7 @@
     "build": "vp pack",
     "dev": "vp pack --watch",
     "check": "vp check",
-    "test": "vp test run",
-    "memory": "node --env-file-if-exists=.env dist/cli.mjs"
+    "memory": "node dist/cli.mjs"
   },
   "dependencies": {
     "github-slugger": "^2.0.0",
@@ -23,7 +22,6 @@
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.0",
     "remark-parse": "^11.0.0",
-    "sqlite-vec": "^0.1.6",
     "unified": "^11.0.0",
     "yaml": "^2.8.0",
     "zod": "^4.6.7"

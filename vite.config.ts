@@ -7,7 +7,6 @@ export default defineConfig({
     dts: true,
     sourcemap: true,
   },
-  test: { include: ["tests/**/*.test.ts"], testTimeout: 15000 },
   lint: { options: { typeAware: true, typeCheck: true } },
   fmt: {},
 });
