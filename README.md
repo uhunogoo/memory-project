@@ -1,6 +1,6 @@
-# Markdown chunking
+# Document chunking
 
-CLI та TypeScript API для поділу Markdown-файлів на чанки. Без бази даних, індексації, embeddings чи пошуку.
+Локальний CLI та TypeScript API для чанкування документів через `officeparser@8.2.0`. Парсинг і поділ повністю виконує бібліотека; власного алгоритму чанкування, БД, embeddings чи пошуку немає.
 
 ## Запуск
 
@@ -9,42 +9,56 @@ CLI та TypeScript API для поділу Markdown-файлів на чанк�
 ```bash
 pnpm install
 pnpm build
-pnpm memory chunk books/example.md
-pnpm memory chunk books/example.md --target-tokens 800 --overlap-tokens 100 > chunks.json
+pnpm memory chunk document.md
+pnpm memory chunk book.pdf --split-by page --chunk-size 2000 > chunks.json
+pnpm memory chunk report.docx --split-by heading
+pnpm memory chunk document.md --strategy fixed-size --chunk-size 1000 --overlap 200
 pnpm memory --help
 ```
 
-Єдина команда — `chunk FILE.md`. Результат у stdout — JSON із `title`, `sections` та `chunks`. Помилки виводяться у stderr з ненульовим кодом завершення. Підтримується лише Markdown; PDF поки не підтримується.
+Єдина команда — `chunk FILE`. Підтримуються формати officeparser, зокрема MD, PDF, DOCX, PPTX, XLSX, ODT, ODP, ODS, RTF, CSV та HTML. OCR вимкнено: скановані документи без текстового шару можуть не дати корисного тексту.
 
 ## Налаштування
 
-- `--target-tokens`: додатне ціле число, типово `800`.
-- `--overlap-tokens`: невід’ємне ціле число, менше за розмір чанка; типово `min(100, floor(targetTokens / 8))`.
+| Параметр        | Значення                                                                                             |
+| --------------- | ---------------------------------------------------------------------------------------------------- |
+| `--strategy`    | `document-structure` (типово) або `fixed-size`                                                       |
+| `--chunk-size`  | Додатне ціле число, типово `1000`; одиниця — UTF-16 code unit (`text.length`), не токен              |
+| `--split-by`    | Для структурної стратегії: `paragraph` (типово), `heading`, `page`, `slide`, `sheet`                 |
+| `--table-split` | Для структурної стратегії: `row` (типово, повторює заголовок таблиці) або `flatten`                  |
+| `--overlap`     | Лише для fixed-size: ціле число від 0 до розміру чанка невключно; типово `min(200, floor(size / 5))` |
 
-Розмір оцінюється як кількість UTF-8 байтів / 3, це не точний підрахунок токенів моделі. Перекриття не переходить між розділами й додатково обмежене третиною байтового бюджету чанка. Межі Markdown-блоків можуть зменшити фактичне перекриття.
+Розмір і межі фрагментів визначаються реалізацією officeparser. Параметри структурного поділу слід обирати під формат: `page` для PDF, `slide` для презентацій, `sheet` для таблиць. Несумісні зі стратегією CLI-параметри відхиляються.
 
-## Результат
+## Результат і координати
 
-Парсер використовує Markdown AST: CommonMark, GFM та YAML frontmatter. Назва документа береться з `title` у frontmatter, першого H1 або назви файлу.
+Stdout містить JSON: `{ source, chunks, messages }`. `source` — абсолютний шлях; `chunks` — незмінені `OfficeChunk` бібліотеки; `messages` — діагностика конвертації. Фатальні помилки виводяться у stderr з кодом завершення 1.
 
-Кожен чанк містить оригінальний `markdown`, очищений `text`, шлях заголовків, ідентифікатор розділу та координати. Розділи містять GitHub-сумісні anchors з обробкою дублікатів.
+Чанк містить `text`, `metadata` та, якщо бібліотека їх повернула, `startIndex` / `endIndex`. Метадані можуть включати `sourceType`, `pageNumber`, `slideNumber`, `sheetName`, `closestHeading`.
 
-- `startOffset` / `endOffset`: UTF-16 позиції, кінець виключний; `markdown.slice(startOffset, endOffset)` відтворює чанк.
-- `startLine` / `endLine`: номери рядків від 1, обидва включні.
-- `estimatedTokens`: оцінка розміру оригінального Markdown чанка.
+Передаємо `addStartIndex: true`, але наявність індексів залежить від стратегії: у перевіреному структурному поділі MD officeparser їх не повертає; у fixed-size вони присутні. Це координати перетвореного тексту бібліотеки, не байти PDF і не точні offsets оригінального Markdown. Точна відповідність зрізу тексту та підсвічування PDF не гарантуються.
 
-Великі блоки коду, списки й таблиці можуть ділитися по рядках або словах. Такий чанк не обов’язково є самодостатнім Markdown-блоком.
+Старі `parseMarkdown`, `sections`, `headingPath`, GitHub anchors, оригінальний `markdown`, номери рядків і `estimatedTokens` видалені. Параметри `--target-tokens` та `--overlap-tokens` більше не підтримуються.
 
 ## API
 
 ```ts
-import { parseMarkdown } from "book-memory";
+import { chunkFile } from "book-memory";
 
-const result = parseMarkdown("document-id", "# Заголовок\n\nТекст", "Документ", {
-  targetTokens: 800,
-  overlapTokens: 100,
+const result = await chunkFile("report.pdf", {
+  strategy: "document-structure",
+  splitBy: "page",
+  maxChunkSize: 2000,
+});
+
+const fixed = await chunkFile("document.md", {
+  strategy: "fixed-size",
+  chunkSize: 1000,
+  chunkOverlap: 100,
 });
 ```
+
+API приймає типізовані опції структурної та fixed-size стратегій officeparser, включно з `separators`, `lengthFunction`, `abbreviations` там, де вони підтримуються. Semantic-стратегія не входить у цей API, бо потребує embeddings.
 
 ## Розробка
 
@@ -52,3 +66,5 @@ const result = parseMarkdown("document-id", "# Заголовок\n\nТекст"
 pnpm check
 pnpm build
 ```
+
+Необов’язковий postinstall Tesseract, який показує повідомлення OpenCollective, вимкнено через `allowBuilds` у `pnpm-workspace.yaml`.

@@ -8,3 +8,5 @@ peerDependencyRules:
     - vite
   allowedVersions:
     vite: "*"
+allowBuilds:
+  tesseract.js: false

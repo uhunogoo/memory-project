@@ -2,7 +2,7 @@
   "name": "book-memory",
   "version": "0.1.0",
   "private": true,
-  "description": "Configurable Markdown chunking CLI",
+  "description": "Document chunking CLI powered by officeparser",
   "bin": {
     "book-memory": "./dist/cli.mjs"
   },
@@ -17,14 +17,7 @@
     "memory": "node dist/cli.mjs"
   },
   "dependencies": {
-    "github-slugger": "^2.0.0",
-    "mdast-util-to-string": "^4.0.0",
-    "remark-frontmatter": "^5.0.0",
-    "remark-gfm": "^4.0.0",
-    "remark-parse": "^11.0.0",
-    "unified": "^11.0.0",
-    "yaml": "^2.8.0",
-    "zod": "^4.6.7"
+    "officeparser": "8.2.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
