@@ -1,6 +1,14 @@
-# Document chunking
+# Book Memory
 
-Локальний CLI та TypeScript API для чанкування документів через `officeparser@8.2.0`. Парсинг і поділ повністю виконує бібліотека; власного алгоритму чанкування, БД, embeddings чи пошуку немає.
+Проєкт натхненний [QMD](https://github.com/tobi/qmd) та ідеєю локального інструмента для роботи з власними книгами й документами.
+
+## Поточний функціонал
+
+Локальний CLI та TypeScript API для парсингу документів і поділу тексту на чанки через `officeparser@8.2.0`. Підтримуються формати бібліотеки, зокрема MD, PDF, DOCX, PPTX, XLSX, ODT, ODP, ODS, RTF, CSV та HTML.
+
+Використовується стратегія `fixed-size`: бібліотека ділить витягнутий текст на фрагменти заданого розміру з перекриттям. Типовий розмір — `2000` одиниць UTF-16 (`text.length`), перекриття — `min(200, floor(chunkSize / 5))`. Це розмір тексту, а не кількість токенів моделі. Фактичні межі чанків визначає officeparser.
+
+Результат містить текст чанків, метадані та координати у витягнутому тексті. OCR вимкнено, тому скановані документи без текстового шару можуть не дати корисного тексту.
 
 ## Запуск
 
@@ -10,61 +18,56 @@
 pnpm install
 pnpm build
 pnpm memory chunk document.md
-pnpm memory chunk book.pdf --split-by page --chunk-size 2000 > chunks.json
-pnpm memory chunk report.docx --split-by heading
-pnpm memory chunk document.md --strategy fixed-size --chunk-size 1000 --overlap 200
-pnpm memory --help
+pnpm memory chunk book.pdf --chunk-size 3000 > chunks.json
+pnpm memory chunk report.docx --chunk-size 1000
 ```
 
-Єдина команда — `chunk FILE`. Підтримуються формати officeparser, зокрема MD, PDF, DOCX, PPTX, XLSX, ODT, ODP, ODS, RTF, CSV та HTML. OCR вимкнено: скановані документи без текстового шару можуть не дати корисного тексту.
+Єдина команда — `chunk FILE`. Вона обробляє один файл і друкує JSON у stdout. Помилки виводяться у stderr з кодом завершення `1`.
 
 ## Налаштування
 
-| Параметр        | Значення                                                                                             |
-| --------------- | ---------------------------------------------------------------------------------------------------- |
-| `--strategy`    | `document-structure` (типово) або `fixed-size`                                                       |
-| `--chunk-size`  | Додатне ціле число, типово `1000`; одиниця — UTF-16 code unit (`text.length`), не токен              |
-| `--split-by`    | Для структурної стратегії: `paragraph` (типово), `heading`, `page`, `slide`, `sheet`                 |
-| `--table-split` | Для структурної стратегії: `row` (типово, повторює заголовок таблиці) або `flatten`                  |
-| `--overlap`     | Лише для fixed-size: ціле число від 0 до розміру чанка невключно; типово `min(200, floor(size / 5))` |
+| Параметр CLI          | Значення                                                              |
+| --------------------- | --------------------------------------------------------------------- |
+| `--chunk-size NUMBER` | Додатне безпечне ціле число; типово `2000`. Розмір у одиницях UTF-16. |
 
-Розмір і межі фрагментів визначаються реалізацією officeparser. Параметри структурного поділу слід обирати під формат: `page` для PDF, `slide` для презентацій, `sheet` для таблиць. Несумісні зі стратегією CLI-параметри відхиляються.
+Перекриття обчислюється автоматично. Типові значення розміру, перекриття та стратегія задані в [`src/config.ts`](src/config.ts).
 
-## Результат і координати
+## Результат
 
-Stdout містить JSON: `{ source, chunks, messages }`. `source` — абсолютний шлях; `chunks` — незмінені `OfficeChunk` бібліотеки; `messages` — діагностика конвертації. Фатальні помилки виводяться у stderr з кодом завершення 1.
+```ts
+type ChunkResult = {
+  source: string;
+  chunks: OfficeChunk[];
+  messages: OfficeIssue[];
+};
+```
 
-Чанк містить `text`, `metadata` та, якщо бібліотека їх повернула, `startIndex` / `endIndex`. Метадані можуть включати `sourceType`, `pageNumber`, `slideNumber`, `sheetName`, `closestHeading`.
+- `source` — абсолютний шлях до документа.
+- `chunks` — чанки officeparser без додаткового перетворення: `text`, `metadata` та необов'язкові `startIndex` / `endIndex`.
+- `messages` — діагностика парсингу й генерації від officeparser.
 
-Передаємо `addStartIndex: true`, але наявність індексів залежить від стратегії: у перевіреному структурному поділі MD officeparser їх не повертає; у fixed-size вони присутні. Це координати перетвореного тексту бібліотеки, не байти PDF і не точні offsets оригінального Markdown. Точна відповідність зрізу тексту та підсвічування PDF не гарантуються.
+Метадані залежать від формату й можуть містити `sourceType`, `pageNumber`, `slideNumber`, `sheetName`, `closestHeading`. Індекси стосуються перетвореного тексту бібліотеки, а не позицій в оригінальному файлі.
 
-Старі `parseMarkdown`, `sections`, `headingPath`, GitHub anchors, оригінальний `markdown`, номери рядків і `estimatedTokens` видалені. Параметри `--target-tokens` та `--overlap-tokens` більше не підтримуються.
-
-## API
+## TypeScript API
 
 ```ts
 import { chunkFile } from "book-memory";
 
-const result = await chunkFile("report.pdf", {
-  strategy: "document-structure",
-  splitBy: "page",
-  maxChunkSize: 2000,
-});
+const result = await chunkFile("report.pdf");
 
-const fixed = await chunkFile("document.md", {
-  strategy: "fixed-size",
+const smallerChunks = await chunkFile("document.md", {
   chunkSize: 1000,
-  chunkOverlap: 100,
 });
 ```
 
-API приймає типізовані опції структурної та fixed-size стратегій officeparser, включно з `separators`, `lengthFunction`, `abbreviations` там, де вони підтримуються. Semantic-стратегія не входить у цей API, бо потребує embeddings.
+`chunkFile(filePath, options?)` приймає шлях до файлу та необов'язковий `chunkSize` як число або числовий рядок. Типовий розмір і формула перекриття ті самі, що й у CLI. Пакет також експортує тип `OfficeChunk` з officeparser.
 
 ## Розробка
 
 ```bash
+pnpm dev
 pnpm check
 pnpm build
 ```
 
-Необов’язковий postinstall Tesseract, який показує повідомлення OpenCollective, вимкнено через `allowBuilds` у `pnpm-workspace.yaml`.
+`dev` збирає CLI та бібліотеку в режимі спостереження, `check` перевіряє форматування, lint і типи, `build` створює ESM-збірку та декларації типів у `dist/`.
