@@ -17,6 +17,7 @@
     "memory": "node dist/cli.mjs"
   },
   "dependencies": {
+    "drizzle-orm": "0.45.4",
     "officeparser": "8.2.0"
   },
   "devDependencies": {
