@@ -2,14 +2,8 @@
 // import { z } from "zod";
 import { parseArgs } from "node:util";
 import { chunkFile } from "./chunk.js";
-import { help, helpMessage } from "./help-message.js";
+import { helpMessage } from "./help-message.js";
 import { discoverBooks } from "./helpers/discoverBooks.js";
-import { config } from "./config.js";
-
-// const commandSchema = z.enum([
-//   "index",
-//   "chunks",
-// ]);
 
 async function main(): Promise<void> {
   // Parameters
@@ -27,14 +21,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  const [ command, file ] = positionals;
+  const [ command, booksDirectory ] = positionals;
 
+  // Index: scan directory, chunking and upsert to DB
   if (command === "index") {
     if (positionals.length !== 1) {
       throw new Error("Expected: book-memory index");
     }
 
-    const books = await discoverBooks(config.booksDirectory);
+    const books = await discoverBooks( booksDirectory );
     console.log(books);
 
     for (const book of books) {

@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
+import { config } from "../config.js";
 
 type DiscoveredBook = {
   name: string;
@@ -36,9 +37,10 @@ async function collectMarkdown(directory: string): Promise<string[]> {
 }
 
 export async function discoverBooks(
-  booksDirectory = "books",
+  booksDirectory?: string,
 ): Promise<DiscoveredBook[]> {
-  const root = resolve(booksDirectory);
+  const currentPath = booksDirectory ?? config.booksDirectory;
+  const root = resolve( currentPath );
   const entries = await readdir(root, { withFileTypes: true });
   entries.sort((a, b) => comparePaths(a.name, b.name));
 
