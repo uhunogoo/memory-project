@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// import { z } from "zod";
 import { parseArgs } from "node:util";
 import { chunkFile } from "./chunk.js";
 import { helpMessage } from "./help-message.js";
 import { discoverBooks } from "./helpers/discoverBooks.js";
+import { openDatabase } from "./db.js";
 
 async function main(): Promise<void> {
   // Parameters
@@ -29,24 +29,30 @@ async function main(): Promise<void> {
       throw new Error("Expected: book-memory index");
     }
 
-    const books = await discoverBooks( booksDirectory );
-    console.log(books);
+    // Create BD if not existed
+    const database = openDatabase();
 
-    for (const book of books) {
-      for (const filePath of book.files) {
-        const chunksData = await chunkFile( filePath, {
-          chunkSize: values["chunk-size"]
-        } );
+    // Chunking and books parse logic
+    try {
+      const books = await discoverBooks( booksDirectory );
 
-        console.log(JSON.stringify(
-          chunksData, null, 2
-        ) );
+      for (const book of books) {
+        for (const filePath of book.files) {
+          const chunksData = await chunkFile( filePath, {
+            chunkSize: values["chunk-size"]
+          } );
+
+          console.log(JSON.stringify(
+            chunksData, null, 2
+          ) );
+        }
       }
+    } finally {
+      database.close();
     }
 
     return;
   }
-
 }
 
 // Error handler
