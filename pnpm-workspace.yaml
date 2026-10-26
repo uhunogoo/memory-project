@@ -9,4 +9,5 @@ peerDependencyRules:
   allowedVersions:
     vite: "*"
 allowBuilds:
+  esbuild: set this to true or false
   tesseract.js: false

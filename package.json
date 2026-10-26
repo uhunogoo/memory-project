@@ -17,7 +17,9 @@
     "memory": "node dist/cli.mjs"
   },
   "dependencies": {
-    "drizzle-orm": "0.45.4",
+    "better-sqlite3": "^13.0.3",
+    "drizzle-kit": "^0.31.11",
+    "drizzle-orm": "^0.45.4",
     "officeparser": "8.2.0",
     "zod": "^4.6.7"
   },
