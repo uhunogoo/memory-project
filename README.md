@@ -15,11 +15,11 @@
 Потрібні Node.js 24+ та pnpm.
 
 ```bash
-pnpm install
-pnpm build
-pnpm memory chunk document.md
-pnpm memory chunk book.pdf --chunk-size 3000 > chunks.json
-pnpm memory chunk report.docx --chunk-size 1000
+vp install
+vp build
+vp memory chunk document.md
+vp memory chunk book.pdf --chunk-size 3000 > chunks.json
+vp memory chunk report.docx --chunk-size 1000
 ```
 
 Єдина команда — `chunk FILE`. Вона обробляє один файл і друкує JSON у stdout. Помилки виводяться у stderr з кодом завершення `1`.
@@ -65,9 +65,9 @@ const smallerChunks = await chunkFile("document.md", {
 ## Розробка
 
 ```bash
-pnpm dev
-pnpm check
-pnpm build
+vp dev
+vp check
+vp build
 ```
 
 `dev` збирає CLI та бібліотеку в режимі спостереження, `check` перевіряє форматування, lint і типи, `build` створює ESM-збірку та декларації типів у `dist/`.

@@ -1,4 +1,5 @@
 export const config = {
+  booksDirectory: "books",
   chunking: {
     strategy: "fixed-size",
     chunkSize: 2000,
