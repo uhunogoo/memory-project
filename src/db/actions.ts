@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { OfficeChunk } from "officeparser";
 import type { DatabaseConnection } from "./db.js";
 import { books, chunks } from "../schemas/schema.js";
@@ -16,6 +16,22 @@ export type ParsedFile = {
 };
 
 const BATCH_SIZE = 100;
+
+export function cleanBookChunks(
+  db: Db,
+  bookDirectory: string
+): number {
+  const matchingBook = db
+    .select({ id: books.id })
+    .from(books)
+    .where(eq(books.source_directory, bookDirectory));
+
+  return db
+    .delete(chunks)
+    .where(inArray(chunks.book_id, matchingBook))
+    .run()
+    .changes;
+}
 
 export function saveBook(
   db: Db,
@@ -51,11 +67,6 @@ export function saveBook(
         metadata: chunk.metadata,
       })),
     );
-
-    // Remove outdated chunks
-    // tx.delete(chunks)
-    //   .where(eq(chunks.book_id, savedBook.id))
-    //   .run();
 
     // Upsert chunks
     let changedCount = 0;

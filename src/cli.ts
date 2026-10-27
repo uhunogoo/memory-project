@@ -4,7 +4,7 @@ import { chunkFile } from "./chunk.js";
 import { helpMessage } from "./help-message.js";
 import { discoverBooks } from "./ingestion/discoverBooks.js";
 import { openDatabase } from "./db/db.js";
-import { saveBook, type ParsedFile } from "./db/actions.js";
+import { cleanBookChunks, saveBook, type ParsedFile } from "./db/actions.js";
 
 async function main(): Promise<void> {
   // Parameters
@@ -12,6 +12,7 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       "chunk-size": { type: "string" },
+      clean: { type: "boolean" },
       help: { type: "boolean" },
     },
   } );
@@ -50,7 +51,15 @@ async function main(): Promise<void> {
         }
 
         // here db
-        const saved = saveBook(database.db, book, filesChunks);
+        const saved = database.db.transaction((tx) => {
+          if (values.clean) {
+            const deleted = cleanBookChunks(tx, book.directory);
+            console.log(`${deleted} chunks was succesfully removed`)
+          }
+
+          return saveBook(tx, book, filesChunks);
+        });
+
         console.log(`Indexed "${book.name}": ${saved} chunks`)
       }
     } finally {
