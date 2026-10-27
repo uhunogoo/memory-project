@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import type { OfficeChunk } from "officeparser";
 import type { DatabaseConnection } from "./db.js";
 import { books, chunks } from "../schemas/schema.js";
@@ -40,6 +40,7 @@ export function saveBook(
       throw new Error(`Не вдалося зберегти книгу: ${book.name}`);
     }
 
+    // Structure chunks to schema
     const rows: (typeof chunks.$inferInsert)[] = files.flatMap((file) =>
       file.chunks.map((chunk) => ({
         book_id: savedBook.id,
@@ -51,17 +52,40 @@ export function saveBook(
       })),
     );
 
-    // Прибираємо також застарілі чанки після зміни або видалення файлів.
-    tx.delete(chunks)
-      .where(eq(chunks.book_id, savedBook.id))
-      .run();
+    // Remove outdated chunks
+    // tx.delete(chunks)
+    //   .where(eq(chunks.book_id, savedBook.id))
+    //   .run();
 
+    // Upsert chunks
+    let changedCount = 0;
     for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-      tx.insert(chunks)
+      const changed = tx
+        .insert(chunks)
         .values(rows.slice(i, i + BATCH_SIZE))
-        .run();
+        .onConflictDoUpdate({
+          target: [
+            chunks.book_id,
+            chunks.source_file,
+            chunks.startIndex,
+            chunks.endIndex,
+          ],
+          // Upsert logic
+          set: {
+            text: sql`excluded.text`,
+            metadata: sql`excluded.metadata`,
+          },
+          setWhere: sql`
+            ${chunks.text} IS NOT excluded.text
+            OR ${chunks.metadata} IS NOT excluded.metadata
+          `,
+        })
+        .returning({ id: chunks.id })
+        .all();
+
+       changedCount += changed.length;
     }
 
-    return rows.length;
+    return changedCount;
   });
 }
