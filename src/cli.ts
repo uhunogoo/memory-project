@@ -51,7 +51,7 @@ async function main(): Promise<void> {
         }
 
         // here db
-        const saved = database.db.transaction((tx) => {
+        const changedChunks = database.db.transaction((tx) => {
           if (values.clean) {
             const deleted = cleanBookChunks(tx, book.directory);
             console.log(`${deleted} chunks was succesfully removed`)
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
           return saveBook(tx, book, filesChunks);
         });
 
-        console.log(`Indexed "${book.name}": ${saved} chunks`)
+        console.log(`Indexed "${book.name}": ${changedChunks.length} chunks`)
       }
     } finally {
       database.close();

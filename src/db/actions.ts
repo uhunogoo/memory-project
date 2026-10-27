@@ -15,6 +15,11 @@ export type ParsedFile = {
   chunks: OfficeChunk[];
 };
 
+export type ChangedChunk = {
+  id: number;
+  text: string;
+}
+
 const BATCH_SIZE = 100;
 
 export function cleanBookChunks(
@@ -37,7 +42,7 @@ export function saveBook(
   db: Db,
   book: Book,
   files: ParsedFile[],
-): number {
+): ChangedChunk[] {
   return db.transaction((tx) => {
     const savedBook = tx
       .insert(books)
@@ -69,7 +74,7 @@ export function saveBook(
     );
 
     // Upsert chunks
-    let changedCount = 0;
+    const changedChunks: ChangedChunk[] = [];
     for (let i = 0; i < rows.length; i += BATCH_SIZE) {
       const changed = tx
         .insert(chunks)
@@ -91,12 +96,15 @@ export function saveBook(
             OR ${chunks.metadata} IS NOT excluded.metadata
           `,
         })
-        .returning({ id: chunks.id })
+        .returning({
+          id: chunks.id,
+          text: chunks.text
+        })
         .all();
 
-       changedCount += changed.length;
+       changedChunks.push( ...changed);
     }
 
-    return changedCount;
+    return changedChunks;
   });
 }
