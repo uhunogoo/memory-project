@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { OfficeConverter } from "officeparser";
 
 // Defaults
-import { config } from "./config.js";
+import { config } from "../config.js";
 
 // Types
 type ChunkOptions = {

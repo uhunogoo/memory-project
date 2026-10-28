@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { chunkFile } from "./chunk.js";
+import { chunkFile } from "./ingestion/chunk-file.js";
 import { helpMessage } from "./help-message.js";
 import { discoverBooks } from "./ingestion/discoverBooks.js";
-import { openDatabase } from "./db/db.js";
-import { cleanBookChunks, saveBook, type ParsedFile } from "./db/actions.js";
+import { openDatabase } from "./db/connection.js";
+import { cleanBookChunks, saveBook, type ParsedFile } from "./ingestion/books.js";
 
 async function main(): Promise<void> {
   // Parameters

@@ -1,8 +1,8 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { OfficeChunk } from "officeparser";
-import type { DatabaseConnection } from "./db.js";
-import { books, chunks } from "../schemas/schema.js";
-import { saveRows } from "./save-rows.js";
+import type { DatabaseConnection } from "../db/connection.js";
+import { books, chunks } from "../db/schema.js";
+import { saveRows } from "../db/save-rows.js";
 
 type Db = DatabaseConnection["db"];
 
@@ -20,8 +20,6 @@ export type ChangedChunk = {
   id: number;
   text: string;
 }
-
-const BATCH_SIZE = 100;
 
 export function cleanBookChunks(
   db: Db,

@@ -1,12 +1,12 @@
 import ollama from 'ollama';
 import { sql } from "drizzle-orm";
 import { config } from '../config.js';
-import { saveRows } from "./save-rows.js";
-import { embeddings } from '../schemas/schema.js';
+import { saveRows } from "../db/save-rows.js";
+import { embeddings } from '../db/schema.js';
 
 // Types
-import type { DatabaseConnection } from './db.js';
-import type { ChangedChunk } from './actions.js';
+import type { DatabaseConnection } from '../db/connection.js';
+import type { ChangedChunk } from '../db/books.js';
 
 // Const
 type Db = DatabaseConnection["db"];
