@@ -6,8 +6,9 @@ export const config = {
     chunkOverlap: 200,
   },
 
-  llm: {
-    model: process.env.LLM_MODEL,
-    apiKey: process.env.LLM_API_KEY,
+  embedding: {
+    dimensions: 768,
+    model: process.env.EMBEDDING_MODEL,
+    apiKey: process.env.EMBEDDING_API_KEY,
   },
 } as const;

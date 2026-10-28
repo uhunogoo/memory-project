@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `embeddings_chunk_model_dimensions_unique` ON `embeddings` (`chunk_id`,`model`,`dimensions`);

@@ -31,4 +31,11 @@ export const embeddings = sqliteTable("embeddings", {
   model: text("model").notNull(),
   dimensions: integer("dimensions").notNull(),
   embedding: blob("embedding", { mode: "buffer" }).notNull(),
-} );
+},
+(table) => [
+  uniqueIndex("embeddings_chunk_model_dimensions_unique").on(
+    table.chunkId,
+    table.model,
+    table.dimensions,
+  ),
+] );

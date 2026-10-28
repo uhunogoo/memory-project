@@ -2,6 +2,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import type { OfficeChunk } from "officeparser";
 import type { DatabaseConnection } from "./db.js";
 import { books, chunks } from "../schemas/schema.js";
+import { saveRows } from "./save-rows.js";
 
 type Db = DatabaseConnection["db"];
 
@@ -74,37 +75,21 @@ export function saveBook(
     );
 
     // Upsert chunks
-    const changedChunks: ChangedChunk[] = [];
-    for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-      const changed = tx
-        .insert(chunks)
-        .values(rows.slice(i, i + BATCH_SIZE))
-        .onConflictDoUpdate({
-          target: [
-            chunks.book_id,
-            chunks.source_file,
-            chunks.startIndex,
-            chunks.endIndex,
-          ],
-          // Upsert logic
-          set: {
-            text: sql`excluded.text`,
-            metadata: sql`excluded.metadata`,
-          },
-          setWhere: sql`
-            ${chunks.text} IS NOT excluded.text
-            OR ${chunks.metadata} IS NOT excluded.metadata
-          `,
-        })
-        .returning({
-          id: chunks.id,
-          text: chunks.text
-        })
-        .all();
-
-       changedChunks.push( ...changed);
-    }
-
-    return changedChunks;
+    return saveRows(tx, chunks, rows, {
+      target: [
+        chunks.book_id,
+        chunks.source_file,
+        chunks.startIndex,
+        chunks.endIndex,
+      ],
+      set: {
+        text: sql`excluded.text`,
+        metadata: sql`excluded.metadata`,
+      },
+      setWhere: sql`
+        ${chunks.text} IS NOT excluded.text
+        OR ${chunks.metadata} IS NOT excluded.metadata
+      `,
+    });
   });
 }
