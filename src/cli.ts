@@ -2,9 +2,9 @@
 import { parseArgs } from "node:util";
 import { chunkFile } from "./ingestion/chunk-file.js";
 import { helpMessage } from "./help-message.js";
-import { discoverBooks } from "./ingestion/discoverBooks.js";
+import { discoverBooks } from "./ingestion/discover-books.js";
 import { openDatabase } from "./db/connection.js";
-import { cleanBookChunks, saveBook, type ParsedFile } from "./ingestion/books.js";
+import { cleanBookChunks, saveBook, type ParsedFile } from "./db/books.js";
 
 async function main(): Promise<void> {
   // Parameters
@@ -67,6 +67,11 @@ async function main(): Promise<void> {
     }
 
     return;
+  }
+
+  // Search
+  if (command === "search") {
+
   }
 }
 

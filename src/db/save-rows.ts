@@ -3,7 +3,7 @@ import type {
   SQLiteInsertOnConflictDoUpdateConfig,
   SQLiteTable,
 } from "drizzle-orm/sqlite-core";
-import type { DatabaseConnection } from "./db.js";
+import type { DatabaseConnection } from "./connection.js";
 
 type Db = DatabaseConnection["db"];
 

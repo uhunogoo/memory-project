@@ -1,8 +1,8 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { OfficeChunk } from "officeparser";
-import type { DatabaseConnection } from "../db/connection.js";
-import { books, chunks } from "../db/schema.js";
-import { saveRows } from "../db/save-rows.js";
+import type { DatabaseConnection } from "./connection.js";
+import { books, chunks } from "./schema.js";
+import { saveRows } from "./save-rows.js";
 
 type Db = DatabaseConnection["db"];
 
