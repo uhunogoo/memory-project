@@ -1,3 +1,5 @@
+import 'dotenv/config';
+
 export const config = {
   booksDirectory: "books",
   chunking: {
