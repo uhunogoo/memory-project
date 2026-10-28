@@ -1,9 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import { fileURLToPath } from "node:url";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
+
 import * as schema from "./schema.js";
 
 export type DatabaseConnection = {
@@ -26,6 +28,7 @@ export function openDatabase(): DatabaseConnection {
 
   try {
     sqlite.pragma("foreign_keys = ON");
+    sqliteVec.load(sqlite);
 
     const db = drizzle(sqlite, { schema });
     migrate(db, { migrationsFolder });

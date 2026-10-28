@@ -5,6 +5,7 @@ import { helpMessage } from "./help-message.js";
 import { discoverBooks } from "./ingestion/discover-books.js";
 import { openDatabase } from "./db/connection.js";
 import { cleanBookChunks, saveBook, type ParsedFile } from "./db/books.js";
+import { embedChunks } from "./ingestion/embed-chunks.js";
 
 async function main(): Promise<void> {
   // Parameters
@@ -50,7 +51,7 @@ async function main(): Promise<void> {
           filesChunks.push(chunksData);
         }
 
-        // here db
+        // Save chunks to DB
         const changedChunks = database.db.transaction((tx) => {
           if (values.clean) {
             const deleted = cleanBookChunks(tx, book.directory);
@@ -60,7 +61,14 @@ async function main(): Promise<void> {
           return saveBook(tx, book, filesChunks);
         });
 
-        console.log(`Indexed "${book.name}": ${changedChunks.length} chunks`)
+        // Save embeddings
+        const embeddedCount = await embedChunks(database.db, changedChunks);
+
+        // Result
+        console.log(
+          `Indexed "${book.name}": ${changedChunks.length} chunks, ` +
+          `${embeddedCount} embeddings`,
+        );
       }
     } finally {
       database.close();
