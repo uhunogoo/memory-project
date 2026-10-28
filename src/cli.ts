@@ -6,6 +6,7 @@ import { discoverBooks } from "./ingestion/discover-books.js";
 import { openDatabase } from "./db/connection.js";
 import { cleanBookChunks, saveBook, type ParsedFile } from "./db/books.js";
 import { embedChunks } from "./ingestion/embed-chunks.js";
+import { hybridSearch } from "./db/hybrid-search.js";
 
 async function main(): Promise<void> {
   // Parameters
@@ -13,6 +14,7 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       "chunk-size": { type: "string" },
+      limit: { type: "string", default: "10" },
       clean: { type: "boolean" },
       help: { type: "boolean" },
     },
@@ -79,7 +81,27 @@ async function main(): Promise<void> {
 
   // Search
   if (command === "search") {
+    const query = positionals[1]?.trim();
 
+    if (positionals.length !== 2 || !query) {
+      throw new Error(
+        'Expected: book-memory search "QUERY" [--limit NUMBER]',
+      );
+    }
+
+    const limit = Number(values.limit);
+    const database = openDatabase();
+
+    try {
+      const results = await hybridSearch(database.db, query, limit);
+      const output = JSON.stringify(results, null, 2);
+
+      console.log(output);
+    } finally {
+      database.close();
+    }
+
+    return;
   }
 }
 
