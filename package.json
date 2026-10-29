@@ -14,7 +14,9 @@
     "build": "vp pack",
     "dev": "vp pack --watch",
     "check": "vp check",
-    "memory": "node dist/cli.mjs"
+    "memory": "node dist/cli.mjs",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate && node scripts/ensure-fts.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
