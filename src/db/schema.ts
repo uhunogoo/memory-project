@@ -10,18 +10,18 @@ export const books = sqliteTable( "books", {
 export const chunks = sqliteTable( "chunks", {
   id: integer("id").primaryKey(),
   book_id: integer("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+  chunkIndex: integer("chunk_index").notNull(),
   source_file: text("source_file").notNull(),
   text: text("text").notNull(),
-  startIndex: integer("start_index").notNull(),
-  endIndex: integer("end_index").notNull(),
+  startIndex: integer("start_index"),
+  endIndex: integer("end_index"),
   metadata: text("metadata", { mode: "json" }).$type<OfficeChunk["metadata"]>().notNull(),
 },
 (table) => [
   uniqueIndex("chunks_book_file_range_unique").on(
     table.book_id,
     table.source_file,
-    table.startIndex,
-    table.endIndex,
+    table.chunkIndex,
   ),
 ] );
 

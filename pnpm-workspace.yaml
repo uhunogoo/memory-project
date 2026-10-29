@@ -11,3 +11,5 @@ peerDependencyRules:
 allowBuilds:
   esbuild: set this to true or false
   tesseract.js: false
+minimumReleaseAgeExclude:
+    - officeparser@8.4.0

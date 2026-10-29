@@ -26,19 +26,15 @@ export async function chunkFile(
 
   // Params
   const source = resolve( filePath );
-  const chunkOverlap = Math.min( chunking.chunkOverlap, Math.floor(chunkSize / 5) );
 
   // Chunking
   const { value: chunks, messages } = await OfficeConverter.convert( source, "chunks", {
     generatorConfig: {
       chunksConfig: {
         strategy: chunking.strategy,
+        splitBy: chunking.splitBy,
 
-        chunkSize: chunkSize,
-        chunkOverlap: chunkOverlap,
-
-        includeMetadata: true,
-        addStartIndex: true,
+        maxChunkSize: chunkSize,
       },
     },
   } );

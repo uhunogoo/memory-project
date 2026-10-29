@@ -3,7 +3,8 @@ import 'dotenv/config';
 export const config = {
   booksDirectory: "books",
   chunking: {
-    strategy: "fixed-size",
+    strategy: "document-structure",
+    splitBy: "heading",
     chunkSize: 2000,
     chunkOverlap: 200,
   },

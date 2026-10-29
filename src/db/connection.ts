@@ -27,11 +27,16 @@ export function openDatabase(): DatabaseConnection {
   const sqlite = new Database(databasePath);
 
   try {
-    sqlite.pragma("foreign_keys = ON");
+    sqlite.pragma("foreign_keys = OFF");
     sqliteVec.load(sqlite);
 
     const db = drizzle(sqlite, { schema });
-    migrate(db, { migrationsFolder });
+
+    try {
+      migrate(db, { migrationsFolder });
+    } finally {
+      sqlite.pragma("foreign_keys = ON");
+    }
 
     return {
       db,

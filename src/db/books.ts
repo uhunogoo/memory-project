@@ -62,12 +62,11 @@ export function saveBook(
 
     // Structure chunks to schema
     const rows: (typeof chunks.$inferInsert)[] = files.flatMap((file) =>
-      file.chunks.map((chunk) => ({
+      file.chunks.map((chunk, chunkIndex) => ({
         book_id: savedBook.id,
+        chunkIndex: chunkIndex,
         source_file: file.source,
         text: chunk.text,
-        startIndex: chunk.startIndex!,
-        endIndex: chunk.endIndex!,
         metadata: chunk.metadata,
       })),
     );
@@ -77,8 +76,7 @@ export function saveBook(
       target: [
         chunks.book_id,
         chunks.source_file,
-        chunks.startIndex,
-        chunks.endIndex,
+        chunks.chunkIndex,
       ],
       set: {
         text: sql`excluded.text`,
