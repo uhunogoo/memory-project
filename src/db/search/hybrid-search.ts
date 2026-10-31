@@ -1,6 +1,6 @@
-import type { DatabaseConnection } from "./connection.js";
-import { ftsSearch } from "./search/fts-search.js";
-import { vectorSearch } from "./search/vector-search.js";
+import type { DatabaseConnection } from "../connection.js";
+import { ftsSearch } from "./fts-search.js";
+import { vectorSearch } from "./vector-search.js";
 
 export type SearchResult = ReturnType<typeof ftsSearch>[number] & {
   score: number;

@@ -11,7 +11,7 @@ import { discoverBooks } from "./ingestion/discover-books.js";
 import { openDatabase } from "./db/connection.js";
 import { cleanBookChunks, saveBook, type ParsedFile } from "./db/books.js";
 import { findPendingEmbeddings } from "./db/pending-embeddings.js"
-import { hybridSearch } from "./db/hybrid-search.js";
+import { hybridSearch } from "./db/search/hybrid-search.js";
 import { resolve } from "node:path";
 
 
@@ -43,18 +43,18 @@ async function main(): Promise<void> {
       );
     }
 
+    // Create BD if not existed
     const database = openDatabase();
 
+    // Search for chunks without embeddings and create them
     try {
       const pendingChunks = findPendingEmbeddings(
         database.db,
         resolve(booksDirectory)
       );
 
-      const embeddedCount = await embedChunks(
-        database.db,
-        pendingChunks,
-      );
+      // Create and save embeddings
+      const embeddedCount = await embedChunks(database.db, pendingChunks );
 
       console.log(`Created ${embeddedCount} embeddings`);
     } finally {
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
           return saveBook(tx, book, filesChunks);
         });
 
-        // Save embeddings
+        // Create and save embeddings
         const embeddedCount = await embedChunks(database.db, changedChunks);
 
         // Result
