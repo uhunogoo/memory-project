@@ -29,7 +29,7 @@ try {
 
   if (needsRepair) {
     const sql = readFileSync(
-      new URL("../src/db/fts/fts.sql", import.meta.url),
+      new URL("../src/db/sql/fts.sql", import.meta.url),
       "utf8",
     );
 

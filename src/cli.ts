@@ -1,12 +1,19 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { chunkFile } from "./ingestion/chunk-file.js";
+
 import { helpMessage } from "./help-message.js";
+
+import { chunkFile } from "./ingestion/chunk-file.js";
+import { embedChunks } from "./ingestion/embed-chunks.js";
 import { discoverBooks } from "./ingestion/discover-books.js";
+
+// DB
 import { openDatabase } from "./db/connection.js";
 import { cleanBookChunks, saveBook, type ParsedFile } from "./db/books.js";
-import { embedChunks } from "./ingestion/embed-chunks.js";
+import { findPendingEmbeddings } from "./db/pending-embeddings.js"
 import { hybridSearch } from "./db/hybrid-search.js";
+import { resolve } from "node:path";
+
 
 async function main(): Promise<void> {
   // Parameters
@@ -27,6 +34,35 @@ async function main(): Promise<void> {
   }
 
   const [ command, booksDirectory ] = positionals;
+
+  // Continue embedding for missing chunks
+  if (command === "embed") {
+    if (positionals.length !== 2 || !booksDirectory) {
+      throw new Error(
+        "Expected: book-memory embed BOOK_DIRECTORY",
+      );
+    }
+
+    const database = openDatabase();
+
+    try {
+      const pendingChunks = findPendingEmbeddings(
+        database.db,
+        resolve(booksDirectory)
+      );
+
+      const embeddedCount = await embedChunks(
+        database.db,
+        pendingChunks,
+      );
+
+      console.log(`Created ${embeddedCount} embeddings`);
+    } finally {
+      database.close();
+    }
+
+    return;
+  }
 
   // Index: scan directory, chunking and upsert to DB
   if (command === "index") {
