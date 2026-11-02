@@ -86,9 +86,12 @@ async function main(): Promise<void> {
             chunkSize: values["chunk-size"]
           } );
 
+          console.log(chunksData.chunks[0])
+          console.log(chunksData.chunks[1])
+
           filesChunks.push(chunksData);
         }
-
+        return;
         // Save chunks to DB
         const changedChunks = database.db.transaction((tx) => {
           if (values.clean) {

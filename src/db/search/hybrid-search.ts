@@ -1,3 +1,4 @@
+import { reranker } from "../../helpers/reranker.js";
 import type { DatabaseConnection } from "../connection.js";
 import { ftsSearch } from "./fts-search.js";
 import { vectorSearch } from "./vector-search.js";
@@ -20,7 +21,7 @@ export async function hybridSearch(
     throw new Error("limit має бути додатним цілим числом");
   }
 
-  const candidateLimit = Math.max(50, limit * 5);
+  const candidateLimit = Math.max(12, limit * 5);
 
   const vectorHits = await vectorSearch(db, query, candidateLimit);
   const textHits = ftsSearch(db, query, candidateLimit);
@@ -41,8 +42,10 @@ export async function hybridSearch(
 
   // Result
   const mergedResults = [...merged.values()];
-  const rankedResults = mergedResults.sort((a, b) => b.score - a.score || a.id - b.id);
-  const results = rankedResults.slice(0, limit);
+
+  // const rankedResults = mergedResults.sort((a, b) => b.score - a.score || a.id - b.id);
+  // const results = rankedResults.slice(0, limit);
+  const results = await reranker(query, mergedResults);
 
   return results;
 }
