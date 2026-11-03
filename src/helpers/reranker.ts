@@ -8,18 +8,18 @@ export async function reranker( query: string, chunks: [] ) {
   const questions = chunks.map((chunk, i) => [
     `chunk_${i}`,
     {
-      type: "score",
-      instructions: chunk.text,
-      criteria: [
-        "Irrelevant: does not help answer the query",
-        "Partially relevant: useful context but no direct answer",
-        "Directly relevant: contains information answering the query",
-      ],
+      type: "noul",
+      instructions: {
+        passage: chunk.text,
+        question: "Does this passage contain information that helps answer the query?"
+      },
+      criteria: {
+        true: "The passage contains a direct answer or useful supporting evidence.",
+        false: "The passage only shares the topic or keywords without helping answer the query."
+      }
     }
   ]);
   const formattedQuestions = Object.fromEntries(questions);
-
-  // console.log('fm: ',formattedQuestions)
 
   // Calculate score for chunks
   const { answers } = await ollama.systemone({
