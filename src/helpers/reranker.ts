@@ -20,6 +20,7 @@ export async function reranker( query: string, chunks: [] ) {
     }
   ]);
   const formattedQuestions = Object.fromEntries(questions);
+  // console.log(formattedQuestions);
 
   // Calculate score for chunks
   const { answers } = await ollama.systemone({
@@ -31,9 +32,9 @@ export async function reranker( query: string, chunks: [] ) {
   // Format chunks score
   const response = chunks.map((chunk, i) => ({
     chunk,
-    score: answers[`chunk_${i}`].score,
+    score: answers[`chunk_${i}`].noul,
   })).sort((a, b) => b.score - a.score);
-  console.log( response[0] )
+  console.log( response )
 
   return response;
 }

@@ -86,12 +86,9 @@ async function main(): Promise<void> {
             chunkSize: values["chunk-size"]
           } );
 
-          console.log(chunksData.chunks[0])
-          console.log(chunksData.chunks[1])
-
           filesChunks.push(chunksData);
         }
-        return;
+
         // Save chunks to DB
         const changedChunks = database.db.transaction((tx) => {
           if (values.clean) {
@@ -135,7 +132,7 @@ async function main(): Promise<void> {
       const results = await hybridSearch(database.db, query, limit);
       const output = JSON.stringify(results, null, 2);
 
-      console.log(output);
+      // console.log(output);
     } finally {
       database.close();
     }
