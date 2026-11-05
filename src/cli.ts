@@ -132,7 +132,8 @@ async function main(): Promise<void> {
       const results = await hybridSearch(database.db, query, limit);
       const output = JSON.stringify(results, null, 2);
 
-      // console.log(output);
+      console.log(`Результати пошуку за запитом: ${query}`);
+      console.log(output);
     } finally {
       database.close();
     }
