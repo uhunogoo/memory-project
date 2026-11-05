@@ -27,7 +27,18 @@ export async function embedChunks(db: Db, chunks: ChangedChunk[]): Promise<numbe
 
   for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
     const currentBatch = chunks.slice(i, i + BATCH_SIZE);
-    const currentTextBatch = currentBatch.map(chunk => chunk.text);
+    const currentTextBatch = currentBatch.map(({ text, metadata }) => {
+      const heading = metadata.closestHeading?.trim();
+      const content = text.trimStart();
+      const firstLine = content.split("\n", 1)[0];
+
+      if (heading && firstLine.trim() === heading) {
+        const body = content.slice(firstLine.length).trimStart();
+        return `title: ${heading} | text: ${body}`;
+      }
+
+      return `title: none | text: ${text}`;
+    });
 
     const response = await ollama.embed({
       model: model,
