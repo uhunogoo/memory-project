@@ -11,7 +11,7 @@ export async function vectorSearch(db: DatabaseConnection["db"], query: string, 
 
   const response = await ollama.embed({
     model: model,
-    input: query,
+    input: `task: search result | query: ${query}`,
     dimensions,
     truncate: false,
   });

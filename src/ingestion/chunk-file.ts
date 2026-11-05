@@ -1,5 +1,10 @@
 import { resolve } from "node:path";
-import OfficeParser, { OfficeConverter, OfficeGenerator, type OfficeChunk, type OfficeContentNode } from "officeparser";
+import {
+  OfficeParser,
+  OfficeGenerator,
+  type OfficeContentNode,
+  type OfficeChunk,
+} from "officeparser";
 
 // Defaults
 import { config } from "../config.js";
@@ -24,61 +29,61 @@ export async function chunkFile(
     throw new Error("chunk-size має бути додатним цілим числом.");
   }
 
-  // Params
-  const source = resolve( filePath );
-
   // Chunking
+  const source = resolve( filePath );
   const ast = await OfficeParser.parseOffice(source);
-  const sectionLevel = 3;
-  const sections: OfficeContentNode[][] = [];
 
-  let section: OfficeContentNode[] = [];
-  let hasContent = false;
+  // Chunks grouping to nodes separated by headers
+  const groups: OfficeContentNode[][] = [];
+  let currentGroup: OfficeContentNode[] = [];
 
-  /**
-   * Parse nodes split them by title (H1-H3):
-   * - merge content between them;
-   */
   for (const node of ast.content) {
-    const startsSection =
+    const isHeading =
       node.type === "heading" &&
-      (node.metadata?.level ?? 1) <= sectionLevel;
+      node.metadata?.level !== undefined &&
+      node.metadata.level <= chunking.headingLevel;
 
-    if (startsSection && hasContent) {
-      sections.push(section);
-      section = [];
-      hasContent = false;
+    if (isHeading && currentGroup.length) {
+      groups.push(currentGroup);
+      currentGroup = [];
     }
 
-    section.push(node);
-
-    if (node.type !== "heading" && node.type !== "break") {
-      hasContent = true;
-    }
+    currentGroup.push(node);
   }
 
-  // Last section exist
-  if (section.length > 0) sections.push(section);
+  if (currentGroup.length) groups.push(currentGroup);
 
+  // Fixed-size chunking within each group
   const chunks: OfficeChunk[] = [];
-  const messages = [...ast.warnings];
+  const messages = [ ...ast.warnings ];
 
-  // Parse ast by officeparse
-  for (const content of sections) {
-    const result = await OfficeGenerator.generate(
-      { ...ast, content },
+  for (const [groupIndex, group] of groups.entries()) {
+    const { value, messages: groupMessages } = await OfficeGenerator.generate(
+      { ...ast, content: group },
       "chunks",
       {
         chunksConfig: {
-          strategy: "fixed-size",
-          chunkSize: 2000,
-          chunkOverlap: 200,
+          strategy: chunking.strategy,
+          chunkSize: chunkSize,
+          chunkOverlap: chunking.chunkOverlap,
+          separators: ["\n\n", "\n", " ", ""],
+          includeMetadata: true,
         },
-      },
+      }
     );
 
-    chunks.push(...result.value);
-    messages.push(...result.messages);
+    messages.push(...groupMessages);
+
+    // Restore metadata
+    for (const chunk of value) {
+      chunks.push({
+        ...chunk,
+        metadata: {
+          ...chunk.metadata,
+          groupIndex,
+        },
+      });
+    }
   }
 
   return { source, chunks, messages };

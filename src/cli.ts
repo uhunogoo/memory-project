@@ -85,9 +85,10 @@ async function main(): Promise<void> {
           const chunksData = await chunkFile( filePath, {
             chunkSize: values["chunk-size"]
           } );
-
+          console.log( chunksData.chunks[0] )
           filesChunks.push(chunksData);
         }
+        return;
 
         // Save chunks to DB
         const changedChunks = database.db.transaction((tx) => {
