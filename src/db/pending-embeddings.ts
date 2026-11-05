@@ -30,6 +30,7 @@ export function findPendingEmbeddings(
     .select({
       id: chunks.id,
       text: chunks.text,
+      metadata: chunks.metadata,
     })
     .from(chunks)
     .innerJoin(books, eq(books.id, chunks.book_id))

@@ -42,10 +42,9 @@ export async function hybridSearch(
 
   // Result
   const mergedResults = [...merged.values()];
-
-  // const rankedResults = mergedResults.sort((a, b) => b.score - a.score || a.id - b.id);
-  // const results = rankedResults.slice(0, limit);
   const results = await reranker(query, mergedResults);
 
-  return results;
+  return results
+    .slice(0, limit)
+    .map(({ chunk, score }) => ({ ...chunk, score }));
 }

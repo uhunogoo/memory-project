@@ -19,6 +19,7 @@ export type ParsedFile = {
 export type ChangedChunk = {
   id: number;
   text: string;
+  metadata: OfficeChunk["metadata"];
 }
 
 export function cleanBookChunks(

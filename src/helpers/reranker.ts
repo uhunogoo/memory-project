@@ -1,8 +1,9 @@
 import ollama from "ollama";
 
-export async function reranker( query: string, chunks: [] ) {
-  if (chunks.length === 0) return;
-  // console.log('ch: ', chunks);
+export async function reranker<T extends { text: string }>(
+  query: string, chunks: T[]
+): Promise<{ chunk: T; score: number }[]> {
+  if (chunks.length === 0) return [];
 
   // Format chunks
   const questions = chunks.map((chunk, i) => [
@@ -20,7 +21,6 @@ export async function reranker( query: string, chunks: [] ) {
     }
   ]);
   const formattedQuestions = Object.fromEntries(questions);
-  // console.log(formattedQuestions);
 
   // Calculate score for chunks
   const { answers } = await ollama.systemone({
@@ -30,11 +30,15 @@ export async function reranker( query: string, chunks: [] ) {
   });
 
   // Format chunks score
-  const response = chunks.map((chunk, i) => ({
-    chunk,
-    score: answers[`chunk_${i}`].noul,
-  })).sort((a, b) => b.score - a.score);
-  console.log( response )
+  const response = chunks.map((chunk, i) => {
+    const answer = answers[`chunk_${i}`];
+
+    if (!answer || answer.type !== "noul") {
+      throw new Error(`Некоректна відповідь reranker для chunk_${i}`);
+    }
+
+    return { chunk, score: answer.noul };
+  }).sort((a, b) => b.score - a.score);
 
   return response;
 }
