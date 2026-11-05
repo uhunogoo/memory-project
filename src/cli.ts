@@ -21,7 +21,7 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       "chunk-size": { type: "string" },
-      limit: { type: "string", default: "10" },
+      limit: { type: "string", default: "16" },
       clean: { type: "boolean" },
       help: { type: "boolean" },
     },

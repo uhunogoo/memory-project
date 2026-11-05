@@ -12,7 +12,7 @@ const RRF_K = 60;
 export async function hybridSearch(
   db: DatabaseConnection["db"],
   query: string,
-  limit = 10,
+  limit: number,
 ): Promise<SearchResult[]> {
   query = query.trim();
   if (!query) return [];
@@ -21,7 +21,7 @@ export async function hybridSearch(
     throw new Error("limit має бути додатним цілим числом");
   }
 
-  const candidateLimit = Math.max(12, limit * 5);
+  const candidateLimit = Math.min(32, Math.max(2, limit));
 
   const vectorHits = await vectorSearch(db, query, candidateLimit);
   const textHits = ftsSearch(db, query, candidateLimit);
