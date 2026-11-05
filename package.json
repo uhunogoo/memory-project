@@ -19,8 +19,6 @@
     "db:migrate": "drizzle-kit migrate && node scripts/ensure-fts.ts"
   },
   "dependencies": {
-    "@langchain/core": "^1.3.4",
-    "@langchain/textsplitters": "^1.0.2",
     "better-sqlite3": "^13.0.3",
     "dotenv": "^18.0.9",
     "drizzle-kit": "^0.31.11",
